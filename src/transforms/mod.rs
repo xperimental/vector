@@ -11,6 +11,8 @@ pub mod aggregate;
 pub mod aws_ec2_metadata;
 #[cfg(feature = "transforms-dedupe")]
 pub mod dedupe;
+#[cfg(feature = "transforms-detect_exceptions")]
+pub mod detect_exceptions;
 #[cfg(feature = "transforms-filter")]
 pub mod filter;
 pub mod log_to_metric;
