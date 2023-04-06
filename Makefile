@@ -13,7 +13,7 @@ ifeq ($(OS),Windows_NT) # is Windows_NT on XP, 2000, 7, Vista, 10...
 else
     export OPERATING_SYSTEM := $(shell uname)  # same as "uname -s"
     export RUST_TARGET ?= "x86_64-unknown-linux-gnu"
-    export FEATURES ?= default
+    export FEATURES ?= ocp-logging
     export DNSTAP_BENCHES := dnstap-benches
 endif
 
@@ -298,7 +298,7 @@ target/%/vector.tar.gz: target/%/vector CARGO_HANDLES_FRESHNESS
 # https://github.com/rust-lang/cargo/issues/6454
 .PHONY: test
 test: ## Run the unit test suite
-	${MAYBE_ENVIRONMENT_EXEC} cargo nextest run --workspace --no-fail-fast --no-default-features --features "${FEATURES}" ${SCOPE}
+	${MAYBE_ENVIRONMENT_EXEC} cargo nextest run -v --workspace --no-fail-fast --no-default-features --features "${FEATURES}" ${SCOPE}
 
 .PHONY: test-docs
 test-docs: ## Run the docs test suite

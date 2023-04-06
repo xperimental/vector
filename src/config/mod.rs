@@ -982,8 +982,8 @@ mod tests {
                   no_proxy = ["localhost", "127.0.0.1"]
 
                 [sources.in]
-                  type = "nginx_metrics"
-                  endpoints = ["http://localhost:8000/basic_status"]
+                  type = "http_server"
+                  address = "0.0.0.0:8000"
                   proxy.http = "http://server:3128"
                   proxy.https = "http://other:3128"
                   proxy.no_proxy = ["localhost", "127.0.0.1"]
@@ -1013,8 +1013,8 @@ mod tests {
                   http = "http://server:3128"
 
                 [sources.in]
-                  type = "nginx_metrics"
-                  endpoints = ["http://localhost:8000/basic_status"]
+                  type = "http_server"
+                  address = "0.0.0.0:8000"
 
                 [sources.in.proxy]
                   http = "http://server:3129"
@@ -1046,8 +1046,8 @@ mod tests {
                   https = "http://other:3128"
 
                 [sources.in]
-                  type = "nginx_metrics"
-                  endpoints = ["http://localhost:8000/basic_status"]
+                  type = "http_server"
+                  address = "0.0.0.0:8000"
 
                 [sources.in.proxy]
                   http = "http://server:3129"

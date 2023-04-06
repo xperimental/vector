@@ -31,3 +31,34 @@ rustflags = ["-C", "link-args=-rdynamic"]
 [target.x86_64-pc-windows-msvc]
 # https://github.com/dtolnay/inventory/issues/58
 rustflags = ["-C", "codegen-units=1"]
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."https://github.com/Azure/azure-sdk-for-rust.git"]
+git = "https://github.com/Azure/azure-sdk-for-rust.git"
+rev = "b4544d4920fa3064eb921340054cd9cc130b7664"
+replace-with = "vendored-sources"
+
+[source."https://github.com/tokio-rs/tracing"]
+git = "https://github.com/tokio-rs/tracing"
+rev = "e0642d949891546a3bb7e47080365ee7274f05cd"
+replace-with = "vendored-sources"
+
+[source."https://github.com/vectordotdev/chrono.git"]
+git = "https://github.com/vectordotdev/chrono.git"
+branch = "no-default-time-v0.4.22-1"
+replace-with = "vendored-sources"
+
+[source."https://github.com/vectordotdev/heim.git"]
+git = "https://github.com/vectordotdev/heim.git"
+branch = "update-nix"
+replace-with = "vendored-sources"
+
+[source."https://github.com/vectordotdev/tokio"]
+git = "https://github.com/vectordotdev/tokio"
+branch = "tokio-util-0.7.4-framed-read-continue-on-error"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
