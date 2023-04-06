@@ -376,6 +376,7 @@ chrono = { git = "https://github.com/vectordotdev/chrono.git", branch = "no-defa
 tokio-util = { git = "https://github.com/vectordotdev/tokio", branch = "tokio-util-0.7.4-framed-read-continue-on-error" }
 aws-config = { path = "patch/aws-config" }
 aws-sigv4 = { path = "patch/aws-sigv4" }
+openssl = { path = "patch/openssl" }
 
 [features]
 ocp-logging = [
