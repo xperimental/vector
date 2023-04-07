@@ -190,6 +190,7 @@ fn serializer_config_to_deserializer(
         SerializerConfig::Native => DeserializerConfig::Native,
         SerializerConfig::NativeJson => DeserializerConfig::NativeJson(Default::default()),
         SerializerConfig::RawMessage | SerializerConfig::Text(_) => DeserializerConfig::Bytes,
+        SerializerConfig::Syslog(_) => todo!(),
     };
 
     deserializer_config.build()
