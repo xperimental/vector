@@ -6,7 +6,7 @@ pub use exception_detector::*;
 use serde_with::serde_as;
 
 use crate::{
-    config::{DataType, Input, Output, TransformConfig, TransformContext, TransformDescription},
+    config::{DataType, Input, Output, TransformConfig, TransformContext},
     event::{discriminant::Discriminant, Event},
     schema,
     transforms::{TaskTransform, Transform},
@@ -14,7 +14,7 @@ use crate::{
 use async_stream::stream;
 use futures::{stream, Stream, StreamExt};
 use std::{collections::HashMap, pin::Pin, time::Duration};
-use vector_config::{configurable_component};
+use vector_config::configurable_component;
 use vector_core::config::LogNamespace;
 
 /// ProgrammingLanguages
@@ -148,9 +148,6 @@ const fn default_max_lines_num() -> usize {
 }
 
 impl_generate_config_from_default!(DetectExceptionsConfig);
-inventory::submit! {
-    TransformDescription::new::<DetectExceptionsConfig>("detect_exceptions")
-}
 
 #[async_trait::async_trait]
 impl TransformConfig for DetectExceptionsConfig {

@@ -119,6 +119,11 @@ pub enum Transforms {
     #[configurable(metadata(docs::label = "Tag Cardinality Limit"))]
     TagCardinalityLimit(tag_cardinality_limit::TagCardinalityLimitConfig),
 
+    /// Aggregate consecutive log events when they contain an exception and a stack trace
+    #[cfg(feature = "transforms-detect_exceptions")]
+    #[configurable(metadata(docs::label = "Exception detector"))]
+    DetectExceptions(detect_exceptions::DetectExceptionsConfig),
+
     /// Test (basic).
     #[cfg(test)]
     TestBasic(crate::test_util::mock::transforms::BasicTransformConfig),
@@ -166,6 +171,8 @@ impl NamedComponent for Transforms {
             Transforms::TestNoop(config) => config.get_component_name(),
             #[cfg(feature = "transforms-throttle")]
             Transforms::Throttle(config) => config.get_component_name(),
+            #[cfg(feature = "transforms-detect_exceptions")]
+            Transforms::DetectExceptions(config) => config.get_component_name(),
             #[allow(unreachable_patterns)]
             _ => unimplemented!(),
         }
