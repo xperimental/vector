@@ -1,4 +1,4 @@
-FROM registry.redhat.io/ubi8:8.6-754 as builder
+FROM registry.redhat.io/ubi9/ubi:latest as builder
 
 RUN INSTALL_PKGS=" \
       gcc-c++ \
@@ -8,17 +8,16 @@ RUN INSTALL_PKGS=" \
       openssl-devel \
       llvm-toolset \
       cyrus-sasl \
-      python36 \
       llvm \
       cyrus-sasl-devel \
       libtool \
       " && \
-    yum install -y $INSTALL_PKGS && \
+    dnf install -y $INSTALL_PKGS && \
     rpm -V $INSTALL_PKGS && \
-    yum clean all
+    dnf clean all
 
 ENV HOME=/root
-RUN curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.67.1 -y
+RUN curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.66.1 -y
 ENV CARGO_HOME=$HOME/.cargo
 ENV PATH=$CARGO_HOME/bin:$PATH
 
@@ -29,8 +28,7 @@ COPY . /src
 
 RUN PROTOC=/src/thirdparty/protoc/protoc-linux-$(arch)  make build
 
-
-FROM registry.redhat.io/ubi8:8.6-754
+FROM registry.redhat.io/ubi9/ubi:latest
 
 COPY --from=builder /src/target/release/vector /usr/bin
 WORKDIR /usr/bin
