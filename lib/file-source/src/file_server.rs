@@ -52,6 +52,7 @@ where
     pub remove_after: Option<Duration>,
     pub emitter: E,
     pub handle: tokio::runtime::Handle,
+    pub rotate_wait: Duration,
 }
 
 /// `FileServer` as Source
@@ -289,6 +290,13 @@ where
                 // Do not move on to newer files if we are behind on an older file
                 if self.oldest_first && maxed_out_reading_single_file {
                     break;
+                }
+            }
+
+            for (_, watcher) in &mut fp_map {
+                if !watcher.file_findable() && watcher.last_seen().elapsed() > self.rotate_wait {
+                    self.emitter.emit_gave_up_on_deleted_file(&watcher.path);
+                    watcher.set_dead();
                 }
             }
 

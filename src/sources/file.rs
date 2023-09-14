@@ -246,6 +246,12 @@ pub struct FileConfig {
     #[configurable(metadata(docs::hidden))]
     #[serde(default)]
     log_namespace: Option<bool>,
+
+    /// How long to keep an open handle to a rotated log file.
+    #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
+    #[configurable(metadata(docs::type_unit = "milliseconds"))]
+    #[serde(default = "default_rotate_wait_ms")]
+    pub rotate_wait_ms: Duration,
 }
 
 fn default_max_line_bytes() -> usize {
@@ -278,6 +284,10 @@ const fn default_max_read_bytes() -> usize {
 
 fn default_line_delimiter() -> String {
     "\n".to_string()
+}
+
+const fn default_rotate_wait_ms() -> Duration {
+    Duration::from_millis(u64::MAX/1000) 
 }
 
 /// Configuration for how files should be identified.
@@ -397,6 +407,7 @@ impl Default for FileConfig {
             encoding: None,
             acknowledgements: Default::default(),
             log_namespace: None,
+            rotate_wait_ms: default_rotate_wait_ms()
         }
     }
 }
@@ -545,6 +556,7 @@ pub fn file_source(
         remove_after: config.remove_after_secs.map(Duration::from_secs),
         emitter: FileSourceInternalEventsEmitter,
         handle: tokio::runtime::Handle::current(),
+        rotate_wait: config.rotate_wait_ms
     };
 
     let event_metadata = EventMetadata {
