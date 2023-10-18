@@ -38,3 +38,9 @@ license-files = [
 
 [advisories]
 ignore = [ ]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+    { name = "ring", wrappers = ["azure_storage"] },
+]

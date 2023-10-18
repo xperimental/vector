@@ -387,10 +387,48 @@ nix = { git = "https://github.com/vectordotdev/nix.git", branch = "memfd/gnu/mus
 ntapi = { git = "https://github.com/MSxDOS/ntapi.git", rev = "24fc1e47677fc9f6e38e5f154e6011dc9b270da6" }
 
 [features]
+ocp-logging = [
+  "sources-stdin",
+  "sources-file-descriptor",
+  "sources-file",
+  "sources-journald",
+  "sources-kubernetes_logs",
+  "sources-prometheus",
+  "sources-internal_metrics",
+  "sources-demo_logs",
+  "sources-http_server",
+
+  "transforms-route",
+  "transforms-dedupe",
+  "transforms-filter",
+  "transforms-remap",
+  "transforms-lua",
+  "transforms-throttle",
+  "transforms-reduce",
+  #"transforms-detect_exceptions",
+
+  "sinks-aws_cloudwatch_logs",
+  "sinks-elasticsearch",
+  "sinks-file",
+  "sinks-kafka",
+  "sinks-loki",
+  "sinks-console",
+  "sinks-prometheus",
+  "sinks-gcp",
+  "sinks-splunk_hec",
+  "sinks-http",
+  "sinks-socket",
+
+  "api",
+  "api-client",
+
+  "unix"
+]
+
 # Default features for *-unknown-linux-gnu and *-apple-darwin
-default = ["api", "api-client", "enrichment-tables", "sinks", "sources", "sources-dnstap", "transforms", "unix", "rdkafka?/gssapi-vendored", "enterprise", "component-validation-runner"]
+default = ["api", "api-client", "enrichment-tables", "sinks", "sources", "sources-dnstap", "transforms", "unix", "rdkafka?/gssapi-vendored", "enterprise"]
 # Default features for `cargo docs`. The same as `default` but without `rdkafka?/gssapi-vendored` which would require installing libsasl in our doc build environment.
-docs = ["api", "api-client", "enrichment-tables", "sinks", "sources", "sources-dnstap", "transforms", "unix", "enterprise", "component-validation-runner"]
+docs = ["api", "api-client", "enrichment-tables", "sinks", "sources", "sources-dnstap", "transforms", "unix", "enterprise"]
 # Default features for *-unknown-linux-* which make use of `cmake` for dependencies
 default-cmake = ["api", "api-client", "enrichment-tables", "rdkafka?/cmake_build", "sinks", "sources", "sources-dnstap", "transforms", "unix", "rdkafka?/gssapi-vendored", "enterprise"]
 # Default features for *-pc-windows-msvc
@@ -866,9 +904,6 @@ enterprise-tests = [
   "sinks-loki",
   "api",
 ]
-
-component-validation-runner = ["dep:tonic", "sources-internal_logs", "sources-internal_metrics", "sources-vector", "sinks-vector"]
-component-validation-tests = ["component-validation-runner", "sources", "transforms", "sinks"]
 
 # Grouping together features for benchmarks. We exclude the API client due to it causing the build process to run out
 # of memory when those additional dependencies are built in CI.
