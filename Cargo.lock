@@ -800,7 +800,6 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 [[package]]
 name = "aws-config"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-http",
@@ -817,7 +816,7 @@ dependencies = [
  "hex",
  "http",
  "hyper",
- "ring 0.16.20",
+ "openssl",
  "time",
  "tokio",
  "tower",
@@ -828,7 +827,6 @@ dependencies = [
 [[package]]
 name = "aws-credential-types"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-async",
  "aws-smithy-types",
@@ -840,7 +838,6 @@ dependencies = [
 [[package]]
 name = "aws-endpoint"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-http",
  "aws-smithy-types",
@@ -853,7 +850,6 @@ dependencies = [
 [[package]]
 name = "aws-http"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-smithy-http",
@@ -871,7 +867,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-cloudwatch"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -896,7 +891,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-cloudwatchlogs"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -919,7 +913,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-elasticsearch"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -942,7 +935,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-firehose"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -964,7 +956,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-kinesis"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -987,7 +978,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-s3"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -1021,7 +1011,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-sns"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -1046,7 +1035,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-sqs"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -1071,7 +1059,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-sso"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -1094,7 +1081,6 @@ dependencies = [
 [[package]]
 name = "aws-sdk-sts"
 version = "0.24.0"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-endpoint",
@@ -1119,7 +1105,6 @@ dependencies = [
 [[package]]
 name = "aws-sig-auth"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-sigv4",
@@ -1133,7 +1118,6 @@ dependencies = [
 [[package]]
 name = "aws-sigv4"
 version = "0.54.2"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-eventstream",
  "aws-smithy-http",
@@ -1153,7 +1137,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-async"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "futures-util",
  "pin-project-lite",
@@ -1164,7 +1147,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-checksums"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-http",
  "aws-smithy-types",
@@ -1184,7 +1166,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-client"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-async",
  "aws-smithy-http",
@@ -1209,7 +1190,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-eventstream"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-types",
  "bytes 1.5.0",
@@ -1219,7 +1199,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-http"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-eventstream",
  "aws-smithy-types",
@@ -1239,7 +1218,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-http-tower"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-http",
  "aws-smithy-types",
@@ -1254,7 +1232,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-json"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-types",
 ]
@@ -1262,7 +1239,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-protocol-test"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "assert-json-diff 1.1.0",
  "http",
@@ -1276,7 +1252,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-query"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-smithy-types",
  "urlencoding",
@@ -1285,7 +1260,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-types"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "base64-simd",
  "itoa",
@@ -1297,7 +1271,6 @@ dependencies = [
 [[package]]
 name = "aws-smithy-xml"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "xmlparser",
 ]
@@ -1305,7 +1278,6 @@ dependencies = [
 [[package]]
 name = "aws-types"
 version = "0.54.1"
-source = "git+https://github.com/vectordotdev/aws-sdk-rust?rev=3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670#3d6aefb7fcfced5fc2a7e761a87e4ddbda1ee670"
 dependencies = [
  "aws-credential-types",
  "aws-smithy-async",
@@ -4116,8 +4088,6 @@ checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
 [[package]]
 name = "hyper"
 version = "0.14.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffb1cfd654a8219eaef89881fdb3bb3b1cdc5fa75ded05d6933b2b382e395468"
 dependencies = [
  "bytes 1.5.0",
  "futures-channel",
@@ -5804,8 +5774,6 @@ dependencies = [
 [[package]]
 name = "openssl"
 version = "0.10.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bac25ee399abb46215765b1cb35bc0212377e58a061560d8b29b024fd0430e7c"
 dependencies = [
  "bitflags 2.4.1",
  "cfg-if",
@@ -9513,9 +9481,9 @@ checksum = "711b9620af191e0cdc7468a8d14e709c3dcdb115b36f838e601583af800a370a"
 
 [[package]]
 name = "uuid"
-version = "1.4.1"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79daa5ed5740825c40b389c5e50312b9c86df53fccd33f281df655642b43869d"
+checksum = "88ad59a7560b41a70d191093a945f0b87bc1deeda46fb237479708a1d6b6cdfc"
 dependencies = [
  "getrandom 0.2.10",
  "rand 0.8.5",
@@ -10683,9 +10651,9 @@ checksum = "09041cd90cf85f7f8b2df60c646f853b7f535ce68f85244eb6731cf89fa498ec"
 
 [[package]]
 name = "zerocopy"
-version = "0.6.4"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20707b61725734c595e840fb3704378a0cd2b9c74cc9e6e20724838fc6a1e2f9"
+checksum = "96f8f25c15a0edc9b07eb66e7e6e97d124c0505435c382fde1ab7ceb188aa956"
 dependencies = [
  "byteorder",
  "zerocopy-derive",
@@ -10693,9 +10661,9 @@ dependencies = [
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.6.4"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56097d5b91d711293a42be9289403896b68654625021732067eac7a4ca388a1f"
+checksum = "855e0f6af9cd72b87d8a6c586f3cb583f5cdcc62c2c80869d8cd7e96fdf7ee20"
 dependencies = [
  "proc-macro2 1.0.69",
  "quote 1.0.33",
