@@ -377,6 +377,7 @@ filecontents
 filterlist
 finalizable
 fingerprinter
+fipsmodule
 fizzaxbbuzz
 fizzbuzz
 fkn
@@ -795,6 +796,7 @@ opinsights
 oplog
 optimizable
 orgid
+OSSL
 ostype
 otel
 otelcol
@@ -838,6 +840,7 @@ posttrunc
 prebuild
 precpu
 preds
+prefs
 preinst
 preread
 prereqs
@@ -1072,6 +1075,7 @@ Takeaways
 targetgroup
 tarpit
 tcmalloc
+teconsent
 telecom
 templatable
 templateable
@@ -1131,6 +1135,8 @@ tripwires
 Trivago
 trivy
 Troutwine
+trustarc
+truste
 TRUSTSTORE
 TSDB
 Tsvg
