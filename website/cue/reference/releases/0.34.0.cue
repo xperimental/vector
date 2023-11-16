@@ -22,7 +22,26 @@ releases: "0.34.0": {
 		  change and recommended practices to either secure the disk buffers or to avoid
 		  storing secrets in events altogether.
 
+		This release also marks the deprecation of the OS package repositories hosted at
+		`repositories.timber.io`. Instead, packages have been moved to `apt.vector.dev` and
+		`yum.vector.dev`. Please see the [release
+		highlight](/highlights/2023-11-07-new-linux-repos) for details about this change and
+		instructions on how to migrate. The repositories located at `repositories.timber.io` will
+		be decommissioned on February 28th, 2024.
 		"""
+
+	known_issues: [
+		"""
+			The Datadog Metrics sink fails to send a large number of requests due to incorrectly
+			sized batches [#19110](https://github.com/vectordotdev/vector/issues/19110). This is
+			fixed in v0.34.1.
+			""",
+		"""
+			The Loki sink incorrectly sets the `Content-Encoding` header on requests to
+			`application/json` when the default `snappy` compression is used. This results in
+			Loki rejecting the requests with an HTTP 400 response. This is fixed in v0.34.1.
+			""",
+	]
 
 	changelog: [
 		{
