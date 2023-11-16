@@ -30,16 +30,16 @@ use reqsign::AliyunConfig;
 use reqsign::AliyunLoader;
 use reqsign::AliyunOssSigner;
 
-use super::appender::OssAppender;
 use super::core::*;
 use super::error::parse_error;
 use super::pager::OssPager;
 use super::writer::OssWriter;
 use crate::raw::*;
+use crate::services::oss::writer::OssWriters;
 use crate::*;
 
-const DEFAULT_WRITE_MIN_SIZE: usize = 8 * 1024 * 1024;
 const DEFAULT_BATCH_MAX_OPERATIONS: usize = 1000;
+
 /// Aliyun Object Storage Service (OSS) support
 #[doc = include_str!("docs.md")]
 #[derive(Default)]
@@ -343,14 +343,6 @@ impl Builder for OssBuilder {
 
         let signer = AliyunOssSigner::new(bucket);
 
-        let write_min_size = self.write_min_size.unwrap_or(DEFAULT_WRITE_MIN_SIZE);
-        if write_min_size < 5 * 1024 * 1024 {
-            return Err(Error::new(
-                ErrorKind::ConfigInvalid,
-                "The write minimum buffer size is misconfigured",
-            )
-            .with_context("service", Scheme::Oss));
-        }
         let batch_max_operations = self
             .batch_max_operations
             .unwrap_or(DEFAULT_BATCH_MAX_OPERATIONS);
@@ -368,7 +360,6 @@ impl Builder for OssBuilder {
                 client,
                 server_side_encryption,
                 server_side_encryption_key_id,
-                write_min_size,
                 batch_max_operations,
             }),
         })
@@ -385,9 +376,8 @@ pub struct OssBackend {
 impl Accessor for OssBackend {
     type Reader = IncomingAsyncBody;
     type BlockingReader = ();
-    type Writer = OssWriter;
+    type Writer = OssWriters;
     type BlockingWriter = ();
-    type Appender = OssAppender;
     type Pager = OssPager;
     type BlockingPager = ();
 
@@ -396,7 +386,7 @@ impl Accessor for OssBackend {
         am.set_scheme(Scheme::Oss)
             .set_root(&self.core.root)
             .set_name(&self.core.bucket)
-            .set_capability(Capability {
+            .set_native_capability(Capability {
                 stat: true,
                 stat_with_if_match: true,
                 stat_with_if_none_match: true,
@@ -408,18 +398,28 @@ impl Accessor for OssBackend {
                 read_with_if_none_match: true,
 
                 write: true,
-                write_can_sink: true,
+                write_can_empty: true,
+                write_can_append: true,
+                write_can_multi: true,
                 write_with_cache_control: true,
                 write_with_content_type: true,
-                write_without_content_length: true,
+                write_with_content_disposition: true,
+                // The min multipart size of OSS is 100 KiB.
+                //
+                // ref: <https://www.alibabacloud.com/help/en/oss/user-guide/multipart-upload-12>
+                write_multi_min_size: Some(100 * 1024),
+                // The max multipart size of OSS is 5 GiB.
+                //
+                // ref: <https://www.alibabacloud.com/help/en/oss/user-guide/multipart-upload-12>
+                write_multi_max_size: if cfg!(target_pointer_width = "64") {
+                    Some(5 * 1024 * 1024 * 1024)
+                } else {
+                    Some(usize::MAX)
+                },
+
                 delete: true,
                 create_dir: true,
                 copy: true,
-
-                append: true,
-                append_with_cache_control: true,
-                append_with_content_type: true,
-                append_with_content_disposition: true,
 
                 list: true,
                 list_with_delimiter_slash: true,
@@ -442,7 +442,7 @@ impl Accessor for OssBackend {
     async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
         let resp = self
             .core
-            .oss_put_object(path, None, None, None, None, AsyncBody::Empty)
+            .oss_put_object(path, None, &OpWrite::default(), AsyncBody::Empty)
             .await?;
         let status = resp.status();
 
@@ -479,17 +479,15 @@ impl Accessor for OssBackend {
     }
 
     async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        Ok((
-            RpWrite::default(),
-            OssWriter::new(self.core.clone(), path, args),
-        ))
-    }
+        let writer = OssWriter::new(self.core.clone(), path, args.clone());
 
-    async fn append(&self, path: &str, args: OpAppend) -> Result<(RpAppend, Self::Appender)> {
-        Ok((
-            RpAppend::default(),
-            OssAppender::new(self.core.clone(), path, args),
-        ))
+        let w = if args.append() {
+            OssWriters::Two(oio::AppendObjectWriter::new(writer))
+        } else {
+            OssWriters::One(oio::MultipartUploadWriter::new(writer))
+        };
+
+        Ok((RpWrite::default(), w))
     }
 
     async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
@@ -563,15 +561,10 @@ impl Accessor for OssBackend {
                 v.if_none_match(),
                 v.override_content_disposition(),
             )?,
-            PresignOperation::Write(v) => self.core.oss_put_object_request(
-                path,
-                None,
-                v.content_type(),
-                v.content_disposition(),
-                v.cache_control(),
-                AsyncBody::Empty,
-                true,
-            )?,
+            PresignOperation::Write(v) => {
+                self.core
+                    .oss_put_object_request(path, None, v, AsyncBody::Empty, true)?
+            }
         };
 
         self.core.sign_query(&mut req, args.expire()).await?;

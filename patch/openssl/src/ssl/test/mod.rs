@@ -1023,7 +1023,9 @@ fn idle_session() {
     assert!(ssl.session().is_none());
 }
 
-/// possible LibreSSL bug since 3.2.1
+/// LibreSSL 3.2.1 enabled TLSv1.3 by default for clients and sessions do
+/// not work due to lack of PSK support. The test passes with NO_TLSV1_3,
+/// but let's ignore it until LibreSSL supports it out of the box.
 #[test]
 #[cfg_attr(libressl321, ignore)]
 fn active_session() {
@@ -1081,7 +1083,9 @@ fn status_callbacks() {
     assert!(CALLED_BACK_CLIENT.load(Ordering::SeqCst));
 }
 
-/// possible LibreSSL bug since 3.2.1
+/// LibreSSL 3.2.1 enabled TLSv1.3 by default for clients and sessions do
+/// not work due to lack of PSK support. The test passes with NO_TLSV1_3,
+/// but let's ignore it until LibreSSL supports it out of the box.
 #[test]
 #[cfg_attr(libressl321, ignore)]
 fn new_session_callback() {
@@ -1106,7 +1110,9 @@ fn new_session_callback() {
     assert!(CALLED_BACK.load(Ordering::SeqCst));
 }
 
-/// possible LibreSSL bug since 3.2.1
+/// LibreSSL 3.2.1 enabled TLSv1.3 by default for clients and sessions do
+/// not work due to lack of PSK support. The test passes with NO_TLSV1_3,
+/// but let's ignore it until LibreSSL supports it out of the box.
 #[test]
 #[cfg_attr(libressl321, ignore)]
 fn new_session_callback_swapped_ctx() {
@@ -1567,4 +1573,18 @@ fn set_num_tickets() {
     ssl.set_num_tickets(5).unwrap();
     let ssl = ssl;
     assert_eq!(5, ssl.num_tickets());
+}
+
+#[test]
+#[cfg(ossl110)]
+fn set_security_level() {
+    let mut ctx = SslContext::builder(SslMethod::tls_server()).unwrap();
+    ctx.set_security_level(3);
+    let ctx = ctx.build();
+    assert_eq!(3, ctx.security_level());
+
+    let mut ssl = Ssl::new(&ctx).unwrap();
+    ssl.set_security_level(4);
+    let ssl = ssl;
+    assert_eq!(4, ssl.security_level());
 }

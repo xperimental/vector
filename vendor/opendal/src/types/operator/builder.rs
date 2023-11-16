@@ -153,16 +153,22 @@ impl Operator {
     /// ```
     pub fn via_map(scheme: Scheme, map: HashMap<String, String>) -> Result<Operator> {
         let op = match scheme {
+            #[cfg(feature = "services-atomicserver")]
+            Scheme::Atomicserver => Self::from_map::<services::Atomicserver>(map)?.finish(),
             #[cfg(feature = "services-azblob")]
             Scheme::Azblob => Self::from_map::<services::Azblob>(map)?.finish(),
-            #[cfg(feature = "services-azdfs")]
-            Scheme::Azdfs => Self::from_map::<services::Azdfs>(map)?.finish(),
+            #[cfg(feature = "services-Azdls")]
+            Scheme::Azdls => Self::from_map::<services::Azdls>(map)?.finish(),
             #[cfg(feature = "services-cacache")]
             Scheme::Cacache => Self::from_map::<services::Cacache>(map)?.finish(),
             #[cfg(feature = "services-cos")]
             Scheme::Cos => Self::from_map::<services::Cos>(map)?.finish(),
             #[cfg(feature = "services-dashmap")]
             Scheme::Dashmap => Self::from_map::<services::Dashmap>(map)?.finish(),
+            #[cfg(feature = "services-etcd")]
+            Scheme::Etcd => Self::from_map::<services::Etcd>(map)?.finish(),
+            #[cfg(feature = "services-foundationdb")]
+            Scheme::Foundationdb => Self::from_map::<services::Foundationdb>(map)?.finish(),
             #[cfg(feature = "services-fs")]
             Scheme::Fs => Self::from_map::<services::Fs>(map)?.finish(),
             #[cfg(feature = "services-ftp")]
@@ -195,6 +201,8 @@ impl Operator {
             Scheme::Gdrive => Self::from_map::<services::Gdrive>(map)?.finish(),
             #[cfg(feature = "services-oss")]
             Scheme::Oss => Self::from_map::<services::Oss>(map)?.finish(),
+            #[cfg(feature = "services-persy")]
+            Scheme::Persy => Self::from_map::<services::Persy>(map)?.finish(),
             #[cfg(feature = "services-redis")]
             Scheme::Redis => Self::from_map::<services::Redis>(map)?.finish(),
             #[cfg(feature = "services-rocksdb")]
@@ -364,7 +372,6 @@ impl<A: Accessor> OperatorBuilder<A> {
     /// Finish the building to construct an Operator.
     pub fn finish(self) -> Operator {
         let ob = self.layer(TypeEraseLayer);
-
         Operator::from_inner(Arc::new(ob.accessor) as FusedAccessor)
     }
 }

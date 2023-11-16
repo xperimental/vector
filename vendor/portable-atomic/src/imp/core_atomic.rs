@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 // Wrap the standard library's atomic types in newtype.
 //
 // This is not a reexport, because we want to backport changes like
@@ -138,7 +140,7 @@ macro_rules! atomic_int {
         #[cfg(not(all(
             any(target_arch = "x86", target_arch = "x86_64"),
             not(any(miri, portable_atomic_sanitize_thread)),
-            any(not(portable_atomic_no_asm), portable_atomic_unstable_asm),
+            not(portable_atomic_no_asm),
         )))]
         #[cfg_attr(
             portable_atomic_no_cfg_target_has_atomic,
@@ -157,7 +159,12 @@ macro_rules! atomic_int {
             }
             #[inline]
             pub(crate) const fn is_always_lock_free() -> bool {
-                true
+                // ESP-IDF targets' 64-bit atomics are not lock-free.
+                // https://github.com/rust-lang/rust/pull/115577#issuecomment-1732259297
+                cfg!(not(all(
+                    any(target_arch = "riscv32", target_arch = "xtensa"),
+                    target_os = "espidf",
+                ))) | (core::mem::size_of::<$int_type>() < 8)
             }
             #[inline]
             pub(crate) fn get_mut(&mut self) -> &mut $int_type {
@@ -369,7 +376,7 @@ macro_rules! atomic_int {
             #[cfg(not(all(
                 any(target_arch = "x86", target_arch = "x86_64"),
                 not(any(miri, portable_atomic_sanitize_thread)),
-                any(not(portable_atomic_no_asm), portable_atomic_unstable_asm),
+                not(portable_atomic_no_asm),
             )))]
             #[inline]
             #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces
@@ -384,7 +391,7 @@ macro_rules! atomic_int {
             #[cfg(not(all(
                 any(target_arch = "x86", target_arch = "x86_64"),
                 not(any(miri, portable_atomic_sanitize_thread)),
-                any(not(portable_atomic_no_asm), portable_atomic_unstable_asm),
+                not(portable_atomic_no_asm),
             )))]
             #[inline]
             #[cfg_attr(miri, track_caller)] // even without panics, this helps for Miri backtraces

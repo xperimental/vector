@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     loop {
-        let _ = terminal.draw(|f| draw(f));
+        let _ = terminal.draw(draw);
 
         if let Event::Key(key) = event::read()? {
             #[allow(clippy::single_match)]
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn draw<B: Backend>(f: &mut Frame<B>) {
+fn draw(f: &mut Frame) {
     let app_area = f.size();
 
     let calarea = Rect {
@@ -69,14 +69,11 @@ fn split_rows(area: &Rect) -> Rc<[Rect]> {
     let list_layout = Layout::default()
         .direction(Direction::Vertical)
         .margin(0)
-        .constraints(
-            [
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
-            ]
-            .as_ref(),
-        );
+        .constraints([
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ]);
 
     list_layout.split(*area)
 }
@@ -85,15 +82,12 @@ fn split_cols(area: &Rect) -> Rc<[Rect]> {
     let list_layout = Layout::default()
         .direction(Direction::Horizontal)
         .margin(0)
-        .constraints(
-            [
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-            ]
-            .as_ref(),
-        );
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ]);
 
     list_layout.split(*area)
 }

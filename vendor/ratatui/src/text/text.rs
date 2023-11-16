@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
-#[allow(deprecated)]
-use super::{Line, Span, Spans};
+use super::{Line, Span};
 use crate::style::Style;
 
 /// A string split over multiple lines where each line is composed of several clusters, each with
@@ -12,8 +11,8 @@ use crate::style::Style;
 /// [`core::iter::Extend`] which enables the concatenation of several [`Text`] blocks.
 ///
 /// ```rust
-/// # use ratatui::text::Text;
-/// # use ratatui::style::{Color, Modifier, Style};
+/// use ratatui::prelude::*;
+///
 /// let style = Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC);
 ///
 /// // An initial two lines of `Text` built from a `&str`
@@ -39,7 +38,7 @@ impl<'a> Text<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use ratatui::text::Text;
+    /// # use ratatui::prelude::*;
     /// Text::raw("The first line\nThe second line");
     /// Text::raw(String::from("The first line\nThe second line"));
     /// ```
@@ -62,8 +61,7 @@ impl<'a> Text<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # use ratatui::text::Text;
-    /// # use ratatui::style::{Color, Modifier, Style};
+    /// # use ratatui::prelude::*;
     /// let style = Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC);
     /// Text::styled("The first line\nThe second line", style);
     /// Text::styled(String::from("The first line\nThe second line"), style);
@@ -82,7 +80,7 @@ impl<'a> Text<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// use ratatui::text::Text;
+    /// # use ratatui::prelude::*;
     /// let text = Text::from("The first line\nThe second line");
     /// assert_eq!(15, text.width());
     /// ```
@@ -95,7 +93,7 @@ impl<'a> Text<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// use ratatui::text::Text;
+    /// # use ratatui::prelude::*;
     /// let text = Text::from("The first line\nThe second line");
     /// assert_eq!(2, text.height());
     /// ```
@@ -108,8 +106,7 @@ impl<'a> Text<'a> {
     /// # Examples
     ///
     /// ```rust
-    /// # use ratatui::text::Text;
-    /// # use ratatui::style::{Color, Modifier, Style};
+    /// # use ratatui::prelude::*;
     /// let style = Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC);
     /// let mut raw_text = Text::raw("The first line\nThe second line");
     /// let styled_text = Text::styled(String::from("The first line\nThe second line"), style);
@@ -130,8 +127,7 @@ impl<'a> Text<'a> {
     /// ## Examples
     ///
     /// ```rust
-    /// # use ratatui::text::{Span, Line, Text};
-    /// # use ratatui::style::{Color, Style, Modifier};
+    /// # use ratatui::prelude::*;
     /// let style = Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC);
     /// let mut text = Text::styled("The first line\nThe second line", style);
     ///
@@ -175,27 +171,9 @@ impl<'a> From<Span<'a>> for Text<'a> {
     }
 }
 
-#[allow(deprecated)]
-impl<'a> From<Spans<'a>> for Text<'a> {
-    fn from(spans: Spans<'a>) -> Text<'a> {
-        Text {
-            lines: vec![spans.into()],
-        }
-    }
-}
-
 impl<'a> From<Line<'a>> for Text<'a> {
     fn from(line: Line<'a>) -> Text<'a> {
         Text { lines: vec![line] }
-    }
-}
-
-#[allow(deprecated)]
-impl<'a> From<Vec<Spans<'a>>> for Text<'a> {
-    fn from(lines: Vec<Spans<'a>>) -> Text<'a> {
-        Text {
-            lines: lines.into_iter().map(|l| l.0.into()).collect(),
-        }
     }
 }
 
@@ -336,39 +314,9 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn from_spans() {
-        let style = Style::new().yellow().italic();
-        let text = Text::from(Spans::from(vec![
-            Span::styled("The first line", style),
-            Span::styled("The second line", style),
-        ]));
-        assert_eq!(
-            text.lines,
-            vec![Line::from(Spans::from(vec![
-                Span::styled("The first line", style),
-                Span::styled("The second line", style),
-            ]))]
-        );
-    }
-
-    #[test]
     fn from_line() {
         let text = Text::from(Line::from("The first line"));
         assert_eq!(text.lines, vec![Line::from("The first line")]);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn from_vec_spans() {
-        let text = Text::from(vec![
-            Spans::from("The first line"),
-            Spans::from("The second line"),
-        ]);
-        assert_eq!(
-            text.lines,
-            vec![Line::from("The first line"), Line::from("The second line"),]
-        );
     }
 
     #[test]

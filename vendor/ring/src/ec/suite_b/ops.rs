@@ -12,7 +12,7 @@
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-use crate::{arithmetic::montgomery::*, c, error, limb::*};
+use crate::{arithmetic::limbs_from_hex, arithmetic::montgomery::*, c, error, limb::*};
 use core::marker::PhantomData;
 
 pub use self::elem::*;
@@ -50,11 +50,7 @@ impl Point {
     }
 }
 
-static ONE: Elem<Unencoded> = Elem {
-    limbs: limbs![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    m: PhantomData,
-    encoding: PhantomData,
-};
+const ONE: Elem<Unencoded> = Elem::from_hex("1");
 
 /// Operations and values needed by all curve operations.
 pub struct CommonOps {
@@ -274,10 +270,7 @@ pub struct PublicScalarOps {
     pub scalar_ops: &'static ScalarOps,
     pub public_key_ops: &'static PublicKeyOps,
 
-    // XXX: `PublicScalarOps` shouldn't depend on `PrivateKeyOps`, but it does
-    // temporarily until `twin_mul` is rewritten.
-    pub private_key_ops: &'static PrivateKeyOps,
-
+    pub twin_mul: fn(g_scalar: &Scalar, p_scalar: &Scalar, p_xy: &(Elem<R>, Elem<R>)) -> Point,
     pub q_minus_n: Elem<Unencoded>,
 }
 
@@ -307,6 +300,19 @@ pub struct PrivateScalarOps {
     pub scalar_ops: &'static ScalarOps,
 
     pub oneRR_mod_n: Scalar<RR>, // 1 * R**2 (mod n). TOOD: Use One<RR>.
+}
+
+// XXX: Inefficient and unnecessarily depends on `PrivateKeyOps`. TODO: implement interleaved wNAF
+// multiplication.
+fn twin_mul_inefficient(
+    ops: &PrivateKeyOps,
+    g_scalar: &Scalar,
+    p_scalar: &Scalar,
+    p_xy: &(Elem<R>, Elem<R>),
+) -> Point {
+    let scaled_g = ops.point_mul_base(g_scalar);
+    let scaled_p = ops.point_mul(p_scalar, p_xy);
+    ops.common.point_sum(&scaled_g, &scaled_p)
 }
 
 // This assumes n < q < 2*n.
@@ -850,14 +856,14 @@ mod tests {
     #[test]
     fn p384_point_double_test() {
         prefixed_extern! {
-            fn nistz384_point_double(
+            fn p384_point_double(
                 r: *mut Limb,   // [p384::COMMON_OPS.num_limbs*3]
                 a: *const Limb, // [p384::COMMON_OPS.num_limbs*3]
             );
         }
         point_double_test(
             &p384::PRIVATE_KEY_OPS,
-            nistz384_point_double,
+            p384_point_double,
             test_file!("ops/p384_point_double_tests.txt"),
         );
     }
@@ -973,6 +979,7 @@ mod tests {
     fn p256_point_mul_base_test() {
         point_mul_base_tests(
             &p256::PRIVATE_KEY_OPS,
+            |s| p256::PRIVATE_KEY_OPS.point_mul_base(s),
             test_file!("ops/p256_point_mul_base_tests.txt"),
         );
     }
@@ -981,16 +988,21 @@ mod tests {
     fn p384_point_mul_base_test() {
         point_mul_base_tests(
             &p384::PRIVATE_KEY_OPS,
+            |s| p384::PRIVATE_KEY_OPS.point_mul_base(s),
             test_file!("ops/p384_point_mul_base_tests.txt"),
         );
     }
 
-    fn point_mul_base_tests(ops: &PrivateKeyOps, test_file: test::File) {
+    pub(super) fn point_mul_base_tests(
+        ops: &PrivateKeyOps,
+        f: impl Fn(&Scalar) -> Point,
+        test_file: test::File,
+    ) {
         test::run(test_file, |section, test_case| {
             assert_eq!(section, "");
             let g_scalar = consume_scalar(ops.common, test_case, "g_scalar");
             let expected_result = consume_point(ops, test_case, "r");
-            let actual_result = ops.point_mul_base(&g_scalar);
+            let actual_result = f(&g_scalar);
             assert_point_actual_equals_expected(ops, &actual_result, &expected_result);
             Ok(())
         })

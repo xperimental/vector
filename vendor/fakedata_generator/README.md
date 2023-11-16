@@ -1,24 +1,41 @@
 # `fakedata_generator`
 > A rust library to generate fake data
 
-!["data generator for Rust"](assets/brand/github_header.png)
+!["data generator for Rust"](assets/brand/github-header.png)
 
-[![Build Status](https://travis-ci.org/kevingimbel/fakedata_generator.svg?branch=master)](https://travis-ci.org/kevingimbel/fakedata_generator)
+![Build Status](https://github.com/KevinGimbel/fakedata_generator/actions/workflows/rust.yml/badge.svg)
+![Coverage](assets/coverage/flat.svg)
 [![Crates.io](https://img.shields.io/crates/v/fakedata_generator.svg)](https://crates.io/crates/fakedata_generator)
 [![Documentation at docs.rs](https://docs.rs/fakedata_generator/badge.svg)](https://docs.rs/fakedata_generator/)
 
 ## Table of contents
+<!-- BEGIN mktoc -->
 
-* [About](#about)
-* [Usage](#usage)
-* [Generators](#generators)
-  * [Generators without arguments](#generators-without-arguments)
-  * [Generators with arguments](#generators-with-arguments)
-  * [Corpora generator](#corpora-generator)
-* [Example](#example)
-* [Contributing](#contributing)
-* [Code of Conduct](#code-of-conduct)
-* [License](#license)
+- [Table of contents](#table-of-contents)
+- [About](#about)
+- [Usage](#usage)
+- [Generators](#generators)
+  - [Generators without arguments](#generators-without-arguments)
+    - [email](#email)
+    - [username](#username)
+    - [domain](#domain)
+    - [http method](#http-method)
+    - [ipv4](#ipv4)
+  - [Generators with arguments](#generators-with-arguments)
+    - [enum](#enum)
+    - [int](#int)
+    - [private ipv4](#private-ipv4)
+    - [passwords](#passwords)
+      - [Without special chars](#without-special-chars)
+      - [With special chars](#with-special-chars)
+  - [Corpora generator](#corpora-generator)
+- [Example](#example)
+- [Contributing](#contributing)
+  - [Where to start?](#where-to-start)
+  - [Tooling](#tooling)
+- [Code of Conduct](#code-of-conduct)
+- [License](#license)
+<!-- END mktoc -->
 
 ## About
 [⬆️ Back to Top](#table-of-contents)
@@ -32,7 +49,7 @@ Add the library as dependency to your `Cargo.toml`.
 
 ```
 [dependencies]
-fakedata_generator = "0.1.0"
+fakedata_generator = "0.3"
 ```
 
 Now the the library can be loaded with `use fakedata_generator::*`.    
@@ -103,7 +120,7 @@ let domain: String = gen_domain();
 // domain = "names.us"
 ```
 
-#### gen_http_method
+#### http method
 
 Return a random HTTP method from a defined list.
 
@@ -121,7 +138,7 @@ let method: String = gen_http_method();
 ```
 
 
-#### gen_ipv4
+#### ipv4
 
 Returns a random IP address. Generates four numbers in the range of 0 - 255 which are written out in the format `{}.{}.{}.{}`. 
 
@@ -168,6 +185,61 @@ Example call
 ```rust
 let num: String = gen_enum("1,100".to_string());
 // num = "42"
+```
+
+#### private ipv4
+
+Creates a private IPv4 address in one of these 3 ranges:
+
+- 10.0.0.0 – 10.255.255.255
+- 172.16.0.0 – 172.31.255.255
+- 192.168.0.0 – 192.168.255.255
+
+The `input` is the number of the first block and can be `10`, `172`, or `192`. If an invalid value is specified it defaults to `10`.
+
+Function signature
+```rust
+gen_private_ip(input: usize) -> String
+```
+
+Example call
+```rust
+let private_ipv4: String = gen_private_ipv4(10);
+// num = 10.64.197.255
+```
+
+#### passwords
+
+##### Without special chars
+Creates a random string.
+
+The `input` is the number of characters the password should consist of.
+
+Function signature
+```rust
+gen_password(input: usize) -> String
+```
+
+Example call
+```rust
+let pw: String = gen_password(32);
+// pw = "bNNpAmShvQYbKbMdhByK17lqaFcgarrF"
+```
+
+##### With special chars
+Creates a random string with special chars.
+
+The `input` is the number of characters the password should consist of.
+
+Function signature
+```rust
+gen_password_with_special_chars(input: usize) -> String
+```
+
+Example call
+```rust
+let pw: String = gen_password_with_special_chars(32);
+// pw = "F=>:e+KX;Uu/Zg#i*MQN//6r%a^K?K°0"
 ```
 
 ### Corpora generator
@@ -224,6 +296,12 @@ Here are some good places to start:
 * Issues with label [Documentation](https://github.com/kevingimbel/fakedata_generator/labels/documentation)
 * Providing example implementations or usage demos
 
+### Tooling
+
+- [mktoc](https://github.com/KevinGimbel/mktoc) is used for table of content generation in the README.md
+- [grcov](https://github.com/mozilla/grcov) is used to generate the coverage badge
+    - this is currently done by hand and not by CI, run `helpers/coverage.sh` to update the badge
+
 ## Code of Conduct
 [⬆️ Back to Top](#table-of-contents)
 
@@ -235,5 +313,3 @@ You are expected to follow our [code of conduct](https://github.com/kevingimbel/
 [MIT License](https://github.com/kevingimbel/fakedata_generator/blob/master/LICENSE) Copyright (c) 2019 Kevin Gimbel
 
 Special Thanks to the Rust Community, Rust Language Maintainers, and JetBrains for IntelliJ IDEA. See [NOTICE](https://github.com/kevingimbel/fakedata_generator/blob/master/NOTICE) for full list. 
- 
-

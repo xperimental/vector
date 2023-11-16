@@ -355,14 +355,6 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API requires the following crate features to be activated: `Window`*"]
     pub fn device_pixel_ratio(this: &Window) -> f64;
-    #[cfg(feature = "Performance")]
-    # [wasm_bindgen (structural , method , getter , js_class = "Window" , js_name = performance)]
-    #[doc = "Getter for the `performance` field of this object."]
-    #[doc = ""]
-    #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/Window/performance)"]
-    #[doc = ""]
-    #[doc = "*This API requires the following crate features to be activated: `Performance`, `Window`*"]
-    pub fn performance(this: &Window) -> Option<Performance>;
     # [wasm_bindgen (structural , method , getter , js_class = "Window" , js_name = orientation)]
     #[doc = "Getter for the `orientation` field of this object."]
     #[doc = ""]
@@ -1908,6 +1900,14 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API requires the following crate features to be activated: `Storage`, `Window`*"]
     pub fn local_storage(this: &Window) -> Result<Option<Storage>, JsValue>;
+    #[cfg(feature = "Performance")]
+    # [wasm_bindgen (structural , method , getter , js_class = "Window" , js_name = performance)]
+    #[doc = "Getter for the `performance` field of this object."]
+    #[doc = ""]
+    #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/Window/performance)"]
+    #[doc = ""]
+    #[doc = "*This API requires the following crate features to be activated: `Performance`, `Window`*"]
+    pub fn performance(this: &Window) -> Option<Performance>;
     # [wasm_bindgen (structural , method , getter , js_class = "Window" , js_name = origin)]
     #[doc = "Getter for the `origin` field of this object."]
     #[doc = ""]
@@ -1938,6 +1938,18 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API requires the following crate features to be activated: `CacheStorage`, `Window`*"]
     pub fn caches(this: &Window) -> Result<CacheStorage, JsValue>;
+    #[cfg(web_sys_unstable_apis)]
+    #[cfg(feature = "Scheduler")]
+    # [wasm_bindgen (structural , method , getter , js_class = "Window" , js_name = scheduler)]
+    #[doc = "Getter for the `scheduler` field of this object."]
+    #[doc = ""]
+    #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/Window/scheduler)"]
+    #[doc = ""]
+    #[doc = "*This API requires the following crate features to be activated: `Scheduler`, `Window`*"]
+    #[doc = ""]
+    #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
+    #[doc = "[described in the `wasm-bindgen` guide](https://rustwasm.github.io/docs/wasm-bindgen/web-sys/unstable-apis.html)*"]
+    pub fn scheduler(this: &Window) -> Scheduler;
     #[cfg(feature = "Storage")]
     # [wasm_bindgen (structural , catch , method , getter , js_class = "Window" , js_name = sessionStorage)]
     #[doc = "Getter for the `sessionStorage` field of this object."]
@@ -2297,7 +2309,7 @@ extern "C" {
     #[doc = "*This API requires the following crate features to be activated: `Window`*"]
     pub fn stop(this: &Window) -> Result<(), JsValue>;
     #[wasm_bindgen(method, structural, js_class = "Window", indexing_getter)]
-    #[doc = "Indexing getter."]
+    #[doc = "Indexing getter. As in the literal Javascript `this[key]`."]
     #[doc = ""]
     #[doc = ""]
     #[doc = ""]

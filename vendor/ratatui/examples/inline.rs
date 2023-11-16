@@ -98,9 +98,7 @@ fn input_handling(tx: mpsc::Sender<Event>) {
         let mut last_tick = Instant::now();
         loop {
             // poll for tick rate duration, if no events, sent tick event.
-            let timeout = tick_rate
-                .checked_sub(last_tick.elapsed())
-                .unwrap_or_else(|| Duration::from_secs(0));
+            let timeout = tick_rate.saturating_sub(last_tick.elapsed());
             if crossterm::event::poll(timeout).unwrap() {
                 match crossterm::event::read().unwrap() {
                     crossterm::event::Event::Key(key) => tx.send(Event::Input(key)).unwrap(),
@@ -216,14 +214,14 @@ fn run_app<B: Backend>(
     Ok(())
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, downloads: &Downloads) {
+fn ui(f: &mut Frame, downloads: &Downloads) {
     let size = f.size();
 
     let block = Block::default().title(block::Title::from("Progress").alignment(Alignment::Center));
     f.render_widget(block, size);
 
     let chunks = Layout::default()
-        .constraints(vec![Constraint::Length(2), Constraint::Length(4)])
+        .constraints([Constraint::Length(2), Constraint::Length(4)])
         .margin(1)
         .split(size);
 
@@ -237,7 +235,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, downloads: &Downloads) {
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Percentage(20), Constraint::Percentage(80)])
+        .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
         .split(chunks[1]);
 
     // in progress downloads

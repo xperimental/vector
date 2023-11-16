@@ -24,6 +24,7 @@ use crate::net::sockopt::Timeout;
     target_os = "haiku",
     target_os = "netbsd",
     target_os = "nto",
+    target_os = "vita",
 )))]
 use crate::net::AddressFamily;
 #[cfg(any(
@@ -83,7 +84,7 @@ fn getsockopt<T: Copy>(fd: BorrowedFd<'_>, level: i32, optname: i32) -> io::Resu
         "Socket APIs don't ever use `bool` directly"
     );
 
-    let mut value = MaybeUninit::<T>::uninit();
+    let mut value = MaybeUninit::<T>::zeroed();
     getsockopt_raw(fd, level, optname, &mut value, &mut optlen)?;
 
     // On Windows at least, `getsockopt` has been observed writing 1
@@ -366,6 +367,7 @@ pub(crate) fn get_socket_send_buffer_size(fd: BorrowedFd<'_>) -> io::Result<usiz
     target_os = "haiku",
     target_os = "netbsd",
     target_os = "nto",
+    target_os = "vita",
 )))]
 pub(crate) fn get_socket_domain(fd: BorrowedFd<'_>) -> io::Result<AddressFamily> {
     let domain: c::c_int = getsockopt(fd, c::SOL_SOCKET, c::SO_DOMAIN)?;
@@ -787,13 +789,25 @@ pub(crate) fn get_ipv6_original_dst(fd: BorrowedFd<'_>) -> io::Result<SocketAddr
     }
 }
 
-#[cfg(not(any(solarish, windows, target_os = "espidf", target_os = "haiku")))]
+#[cfg(not(any(
+    solarish,
+    windows,
+    target_os = "espidf",
+    target_os = "haiku",
+    target_os = "vita"
+)))]
 #[inline]
 pub(crate) fn set_ipv6_tclass(fd: BorrowedFd<'_>, value: u32) -> io::Result<()> {
     setsockopt(fd, c::IPPROTO_IPV6, c::IPV6_TCLASS, value)
 }
 
-#[cfg(not(any(solarish, windows, target_os = "espidf", target_os = "haiku")))]
+#[cfg(not(any(
+    solarish,
+    windows,
+    target_os = "espidf",
+    target_os = "haiku",
+    target_os = "vita"
+)))]
 #[inline]
 pub(crate) fn get_ipv6_tclass(fd: BorrowedFd<'_>) -> io::Result<u32> {
     getsockopt(fd, c::IPPROTO_IPV6, c::IPV6_TCLASS)

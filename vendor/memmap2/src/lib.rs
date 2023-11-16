@@ -36,6 +36,8 @@
 //! you can use [`MmapOptions`] in order to further configure a mapping
 //! before you create it.
 
+#![allow(clippy::len_without_is_empty, clippy::missing_safety_doc)]
+
 #[cfg_attr(unix, path = "unix.rs")]
 #[cfg_attr(windows, path = "windows.rs")]
 #[cfg_attr(not(any(unix, windows)), path = "stub.rs")]
@@ -45,7 +47,7 @@ use crate::os::{file_len, MmapInner};
 #[cfg(unix)]
 mod advice;
 #[cfg(unix)]
-pub use crate::advice::Advice;
+pub use crate::advice::{Advice, UncheckedAdvice};
 
 use std::fmt;
 #[cfg(not(any(unix, windows)))]
@@ -529,7 +531,7 @@ impl MmapOptions {
 /// Dereferencing and accessing the bytes of the buffer may result in page faults (e.g. swapping
 /// the mapped pages into physical memory) though the details of this are platform specific.
 ///
-/// `Mmap` is [`Sync`](std::marker::Sync) and [`Send`](std::marker::Send).
+/// `Mmap` is [`Sync`] and [`Send`].
 ///
 /// ## Safety
 ///
@@ -637,24 +639,55 @@ impl Mmap {
         Ok(MmapMut { inner: self.inner })
     }
 
-    /// Advise OS how this memory map will be accessed. Only supported on Unix.
-    ///
-    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
-    #[cfg(unix)]
-    pub fn advise(&self, advice: Advice) -> Result<()> {
-        self.inner.advise(advice, 0, self.inner.len())
-    }
-
-    /// Advise OS how this range of memory map will be accessed.
-    ///
-    /// The offset and length must be in the bounds of the memory map.
+    /// Advise OS how this memory map will be accessed.
     ///
     /// Only supported on Unix.
     ///
     /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
     #[cfg(unix)]
+    pub fn advise(&self, advice: Advice) -> Result<()> {
+        self.inner
+            .advise(advice as libc::c_int, 0, self.inner.len())
+    }
+
+    /// Advise OS how this memory map will be accessed.
+    ///
+    /// Used with the [unchecked flags][UncheckedAdvice]. Only supported on Unix.
+    ///
+    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
+    #[cfg(unix)]
+    pub unsafe fn unchecked_advise(&self, advice: UncheckedAdvice) -> Result<()> {
+        self.inner
+            .advise(advice as libc::c_int, 0, self.inner.len())
+    }
+
+    /// Advise OS how this range of memory map will be accessed.
+    ///
+    /// Only supported on Unix.
+    ///
+    /// The offset and length must be in the bounds of the memory map.
+    ///
+    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
+    #[cfg(unix)]
     pub fn advise_range(&self, advice: Advice, offset: usize, len: usize) -> Result<()> {
-        self.inner.advise(advice, offset, len)
+        self.inner.advise(advice as libc::c_int, offset, len)
+    }
+
+    /// Advise OS how this range of memory map will be accessed.
+    ///
+    /// Used with the [unchecked flags][UncheckedAdvice]. Only supported on Unix.
+    ///
+    /// The offset and length must be in the bounds of the memory map.
+    ///
+    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
+    #[cfg(unix)]
+    pub unsafe fn unchecked_advise_range(
+        &self,
+        advice: UncheckedAdvice,
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        self.inner.advise(advice as libc::c_int, offset, len)
     }
 
     /// Lock the whole memory map into RAM. Only supported on Unix.
@@ -850,12 +883,26 @@ impl MmapRaw {
         self.inner.flush_async(offset, len)
     }
 
-    /// Advise OS how this memory map will be accessed. Only supported on Unix.
+    /// Advise OS how this memory map will be accessed.
+    ///
+    /// Only supported on Unix.
     ///
     /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
     #[cfg(unix)]
     pub fn advise(&self, advice: Advice) -> Result<()> {
-        self.inner.advise(advice, 0, self.inner.len())
+        self.inner
+            .advise(advice as libc::c_int, 0, self.inner.len())
+    }
+
+    /// Advise OS how this memory map will be accessed.
+    ///
+    /// Used with the [unchecked flags][UncheckedAdvice]. Only supported on Unix.
+    ///
+    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
+    #[cfg(unix)]
+    pub unsafe fn unchecked_advise(&self, advice: UncheckedAdvice) -> Result<()> {
+        self.inner
+            .advise(advice as libc::c_int, 0, self.inner.len())
     }
 
     /// Advise OS how this range of memory map will be accessed.
@@ -867,7 +914,24 @@ impl MmapRaw {
     /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
     #[cfg(unix)]
     pub fn advise_range(&self, advice: Advice, offset: usize, len: usize) -> Result<()> {
-        self.inner.advise(advice, offset, len)
+        self.inner.advise(advice as libc::c_int, offset, len)
+    }
+
+    /// Advise OS how this range of memory map will be accessed.
+    ///
+    /// Used with the [unchecked flags][UncheckedAdvice]. Only supported on Unix.
+    ///
+    /// The offset and length must be in the bounds of the memory map.
+    ///
+    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
+    #[cfg(unix)]
+    pub unsafe fn unchecked_advise_range(
+        &self,
+        advice: UncheckedAdvice,
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        self.inner.advise(advice as libc::c_int, offset, len)
     }
 
     /// Lock the whole memory map into RAM. Only supported on Unix.
@@ -946,7 +1010,7 @@ impl From<MmapMut> for MmapRaw {
 /// Dereferencing and accessing the bytes of the buffer may result in page faults (e.g. swapping
 /// the mapped pages into physical memory) though the details of this are platform specific.
 ///
-/// `Mmap` is [`Sync`](std::marker::Sync) and [`Send`](std::marker::Send).
+/// `Mmap` is [`Sync`] and [`Send`].
 ///
 /// See [`Mmap`] for the immutable version.
 ///
@@ -1140,24 +1204,55 @@ impl MmapMut {
         Ok(Mmap { inner: self.inner })
     }
 
-    /// Advise OS how this memory map will be accessed. Only supported on Unix.
-    ///
-    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
-    #[cfg(unix)]
-    pub fn advise(&self, advice: Advice) -> Result<()> {
-        self.inner.advise(advice, 0, self.inner.len())
-    }
-
-    /// Advise OS how this range of memory map will be accessed.
-    ///
-    /// The offset and length must be in the bounds of the memory map.
+    /// Advise OS how this memory map will be accessed.
     ///
     /// Only supported on Unix.
     ///
     /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
     #[cfg(unix)]
+    pub fn advise(&self, advice: Advice) -> Result<()> {
+        self.inner
+            .advise(advice as libc::c_int, 0, self.inner.len())
+    }
+
+    /// Advise OS how this memory map will be accessed.
+    ///
+    /// Used with the [unchecked flags][UncheckedAdvice]. Only supported on Unix.
+    ///
+    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
+    #[cfg(unix)]
+    pub unsafe fn unchecked_advise(&self, advice: UncheckedAdvice) -> Result<()> {
+        self.inner
+            .advise(advice as libc::c_int, 0, self.inner.len())
+    }
+
+    /// Advise OS how this range of memory map will be accessed.
+    ///
+    /// Only supported on Unix.
+    ///
+    /// The offset and length must be in the bounds of the memory map.
+    ///
+    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
+    #[cfg(unix)]
     pub fn advise_range(&self, advice: Advice, offset: usize, len: usize) -> Result<()> {
-        self.inner.advise(advice, offset, len)
+        self.inner.advise(advice as libc::c_int, offset, len)
+    }
+
+    /// Advise OS how this range of memory map will be accessed.
+    ///
+    /// Used with the [unchecked flags][UncheckedAdvice]. Only supported on Unix.
+    ///
+    /// The offset and length must be in the bounds of the memory map.
+    ///
+    /// See [madvise()](https://man7.org/linux/man-pages/man2/madvise.2.html) map page.
+    #[cfg(unix)]
+    pub fn unchecked_advise_range(
+        &self,
+        advice: UncheckedAdvice,
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
+        self.inner.advise(advice as libc::c_int, offset, len)
     }
 
     /// Lock the whole memory map into RAM. Only supported on Unix.
@@ -1291,7 +1386,7 @@ mod test {
     extern crate tempfile;
 
     #[cfg(unix)]
-    use crate::advice::Advice;
+    use crate::advice::{Advice, UncheckedAdvice};
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
     use std::mem;
@@ -1315,7 +1410,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
 
         file.set_len(expected_len as u64).unwrap();
@@ -1348,7 +1443,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
 
         file.set_len(expected_len as u64).unwrap();
@@ -1380,7 +1475,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
         let mmap = unsafe { Mmap::map(&file).unwrap() };
         assert!(mmap.is_empty());
@@ -1435,7 +1530,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
         file.set_len(128).unwrap();
 
@@ -1459,7 +1554,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
         file.set_len(128).unwrap();
         let write = b"abc123";
@@ -1485,7 +1580,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
         file.set_len(128).unwrap();
 
@@ -1521,7 +1616,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
         file.set_len(128).unwrap();
 
@@ -1546,10 +1641,10 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
 
-        let offset = u32::max_value() as u64 + 2;
+        let offset = u32::MAX as u64 + 2;
         let len = 5432;
         file.set_len(offset + len as u64).unwrap();
 
@@ -1633,7 +1728,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&tempdir.path().join("jit_x86"))
+            .open(tempdir.path().join("jit_x86"))
             .expect("open");
 
         file.set_len(4096).expect("set_len");
@@ -1653,7 +1748,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .expect("open");
         file.set_len(256_u64).expect("set_len");
 
@@ -1699,7 +1794,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .expect("open");
         file.set_len(256_u64).expect("set_len");
 
@@ -1753,7 +1848,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .expect("open");
         file.write_all(b"abc123").unwrap();
         let mmap = MmapOptions::new().map_raw(&file).unwrap();
@@ -1807,7 +1902,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
 
         file.set_len(expected_len as u64).unwrap();
@@ -1845,6 +1940,45 @@ mod test {
         assert_eq!(&incr[..], &mmap[..]);
     }
 
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn advise_writes_unsafely() {
+        let mut mmap = MmapMut::map_anon(4096).unwrap();
+        mmap.as_mut().fill(255);
+        let mmap = mmap.make_read_only().unwrap();
+
+        let a = mmap.as_ref()[0];
+        unsafe {
+            mmap.unchecked_advise(UncheckedAdvice::DontNeed).unwrap();
+        }
+        let b = mmap.as_ref()[0];
+
+        assert_eq!(a, 255);
+        assert_eq!(b, 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn advise_writes_unsafely_to_part_of_map() {
+        let mut mmap = MmapMut::map_anon(8192).unwrap();
+        mmap.as_mut().fill(255);
+        let mmap = mmap.make_read_only().unwrap();
+
+        let a = mmap.as_ref()[0];
+        let b = mmap.as_ref()[4096];
+        unsafe {
+            mmap.unchecked_advise_range(UncheckedAdvice::DontNeed, 4096, 4096)
+                .unwrap();
+        }
+        let c = mmap.as_ref()[0];
+        let d = mmap.as_ref()[4096];
+
+        assert_eq!(a, 255);
+        assert_eq!(b, 255);
+        assert_eq!(c, 255);
+        assert_eq!(d, 0);
+    }
+
     /// Returns true if a non-zero amount of memory is locked.
     #[cfg(target_os = "linux")]
     fn is_locked() -> bool {
@@ -1869,7 +2003,7 @@ mod test {
             .read(true)
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
         file.set_len(128).unwrap();
 

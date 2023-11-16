@@ -7,8 +7,8 @@ use core::hash::{BuildHasher, Hash};
 use core::iter::{Chain, FromIterator, FusedIterator};
 use core::ops::{BitAnd, BitOr, BitXor, Sub};
 
-use super::map::{self, DefaultHashBuilder, ExtractIfInner, HashMap, Keys};
-use crate::raw::{Allocator, Global};
+use super::map::{self, DefaultHashBuilder, HashMap, Keys};
+use crate::raw::{Allocator, Global, RawExtractIf};
 
 // Future Optimization (FIXME!)
 // =============================
@@ -383,6 +383,8 @@ impl<T, S, A: Allocator> HashSet<T, S, A> {
     /// or the iteration short-circuits, then the remaining elements will be retained.
     /// Use [`retain()`] with a negated predicate if you do not need the returned iterator.
     ///
+    /// [`retain()`]: HashSet::retain
+    ///
     /// # Examples
     ///
     /// ```
@@ -406,7 +408,7 @@ impl<T, S, A: Allocator> HashSet<T, S, A> {
     {
         ExtractIf {
             f,
-            inner: ExtractIfInner {
+            inner: RawExtractIf {
                 iter: unsafe { self.map.table.iter() },
                 table: &mut self.map.table,
             },
@@ -1580,7 +1582,7 @@ where
     F: FnMut(&K) -> bool,
 {
     f: F,
-    inner: ExtractIfInner<'a, K, (), A>,
+    inner: RawExtractIf<'a, (K, ()), A>,
 }
 
 /// A lazy iterator producing elements in the intersection of `HashSet`s.
@@ -1779,9 +1781,9 @@ where
 
     #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<Self::Item> {
-        let f = &mut self.f;
-        let (k, _) = self.inner.next(&mut |k, _| f(k))?;
-        Some(k)
+        self.inner
+            .next(|&mut (ref k, ())| (self.f)(k))
+            .map(|(k, ())| k)
     }
 
     #[inline]

@@ -1,6 +1,10 @@
-// Copyright 2019 The Fuchsia Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// Copyright 2019 The Fuchsia Authors
+//
+// Licensed under a BSD-style license <LICENSE-BSD>, Apache License, Version 2.0
+// <LICENSE-APACHE or https://www.apache.org/licenses/LICENSE-2.0>, or the MIT
+// license <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your option.
+// This file may not be copied, modified, or distributed except according to
+// those terms.
 
 //! Derive macros for [zerocopy]'s traits.
 //!
@@ -12,7 +16,7 @@
 // our MSRV.
 #![allow(unknown_lints)]
 #![deny(renamed_and_removed_lints)]
-#![deny(clippy::all, clippy::missing_safety_doc)]
+#![deny(clippy::all, clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 #![deny(
     rustdoc::bare_urls,
     rustdoc::broken_intra_doc_links,
@@ -30,10 +34,9 @@ mod repr;
 use {
     proc_macro2::Span,
     quote::quote,
-    syn::visit::{self, Visit},
     syn::{
-        parse_quote, punctuated::Punctuated, token::Comma, Data, DataEnum, DataStruct, DataUnion,
-        DeriveInput, Error, GenericParam, Ident, Lifetime, Type, TypePath,
+        parse_quote, Data, DataEnum, DataStruct, DataUnion, DeriveInput, Error, Expr, ExprLit,
+        GenericParam, Ident, Lit,
     },
 };
 
@@ -50,11 +53,33 @@ use {crate::ext::*, crate::repr::*};
 // help: required by the derive of FromBytes
 //
 // Instead, we have more verbose error messages like "unsupported representation
-// for deriving FromBytes, AsBytes, or Unaligned on an enum"
+// for deriving FromZeroes, FromBytes, AsBytes, or Unaligned on an enum"
 //
 // This will probably require Span::error
 // (https://doc.rust-lang.org/nightly/proc_macro/struct.Span.html#method.error),
 // which is currently unstable. Revisit this once it's stable.
+
+#[proc_macro_derive(KnownLayout)]
+pub fn derive_known_layout(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let ast = syn::parse_macro_input!(ts as DeriveInput);
+    match &ast.data {
+        Data::Struct(strct) => impl_block(&ast, strct, Trait::KnownLayout, false, None),
+        Data::Enum(enm) => impl_block(&ast, enm, Trait::KnownLayout, false, None),
+        Data::Union(unn) => impl_block(&ast, unn, Trait::KnownLayout, false, None),
+    }
+    .into()
+}
+
+#[proc_macro_derive(FromZeroes)]
+pub fn derive_from_zeroes(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let ast = syn::parse_macro_input!(ts as DeriveInput);
+    match &ast.data {
+        Data::Struct(strct) => derive_from_zeroes_struct(&ast, strct),
+        Data::Enum(enm) => derive_from_zeroes_enum(&ast, enm),
+        Data::Union(unn) => derive_from_zeroes_union(&ast, unn),
+    }
+    .into()
+}
 
 #[proc_macro_derive(FromBytes)]
 pub fn derive_from_bytes(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -107,11 +132,59 @@ const STRUCT_UNION_ALLOWED_REPR_COMBINATIONS: &[&[StructRepr]] = &[
     &[StructRepr::C, StructRepr::Packed],
 ];
 
+// A struct is `FromZeroes` if:
+// - all fields are `FromZeroes`
+
+fn derive_from_zeroes_struct(ast: &DeriveInput, strct: &DataStruct) -> proc_macro2::TokenStream {
+    impl_block(ast, strct, Trait::FromZeroes, true, None)
+}
+
+// An enum is `FromZeroes` if:
+// - all of its variants are fieldless
+// - one of the variants has a discriminant of `0`
+
+fn derive_from_zeroes_enum(ast: &DeriveInput, enm: &DataEnum) -> proc_macro2::TokenStream {
+    if !enm.is_c_like() {
+        return Error::new_spanned(ast, "only C-like enums can implement FromZeroes")
+            .to_compile_error();
+    }
+
+    let has_explicit_zero_discriminant =
+        enm.variants.iter().filter_map(|v| v.discriminant.as_ref()).any(|(_, e)| {
+            if let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = e {
+                i.base10_parse::<usize>().ok() == Some(0)
+            } else {
+                false
+            }
+        });
+    // If the first variant of an enum does not specify its discriminant, it is set to zero:
+    // https://doc.rust-lang.org/reference/items/enumerations.html#custom-discriminant-values-for-fieldless-enumerations
+    let has_implicit_zero_discriminant =
+        enm.variants.iter().next().map(|v| v.discriminant.is_none()) == Some(true);
+
+    if !has_explicit_zero_discriminant && !has_implicit_zero_discriminant {
+        return Error::new_spanned(
+            ast,
+            "FromZeroes only supported on enums with a variant that has a discriminant of `0`",
+        )
+        .to_compile_error();
+    }
+
+    impl_block(ast, enm, Trait::FromZeroes, true, None)
+}
+
+// Like structs, unions are `FromZeroes` if
+// - all fields are `FromZeroes`
+
+fn derive_from_zeroes_union(ast: &DeriveInput, unn: &DataUnion) -> proc_macro2::TokenStream {
+    impl_block(ast, unn, Trait::FromZeroes, true, None)
+}
+
 // A struct is `FromBytes` if:
 // - all fields are `FromBytes`
 
 fn derive_from_bytes_struct(ast: &DeriveInput, strct: &DataStruct) -> proc_macro2::TokenStream {
-    impl_block(ast, strct, "FromBytes", true, PaddingCheck::None)
+    impl_block(ast, strct, Trait::FromBytes, true, None)
 }
 
 // An enum is `FromBytes` if:
@@ -154,7 +227,7 @@ fn derive_from_bytes_enum(ast: &DeriveInput, enm: &DataEnum) -> proc_macro2::Tok
         .to_compile_error();
     }
 
-    impl_block(ast, enm, "FromBytes", true, PaddingCheck::None)
+    impl_block(ast, enm, Trait::FromBytes, true, None)
 }
 
 #[rustfmt::skip]
@@ -185,7 +258,7 @@ const ENUM_FROM_BYTES_CFG: Config<EnumRepr> = {
 // - all fields are `FromBytes`
 
 fn derive_from_bytes_union(ast: &DeriveInput, unn: &DataUnion) -> proc_macro2::TokenStream {
-    impl_block(ast, unn, "FromBytes", true, PaddingCheck::None)
+    impl_block(ast, unn, Trait::FromBytes, true, None)
 }
 
 // A struct is `AsBytes` if:
@@ -218,9 +291,8 @@ fn derive_as_bytes_struct(ast: &DeriveInput, strct: &DataStruct) -> proc_macro2:
     // - repr(packed): Any inter-field padding bytes are removed, meaning that
     //   any padding bytes would need to come from the fields, all of which
     //   we require to be `AsBytes` (meaning they don't have any padding).
-    let padding_check =
-        if is_transparent || is_packed { PaddingCheck::None } else { PaddingCheck::Struct };
-    impl_block(ast, strct, "AsBytes", true, padding_check)
+    let padding_check = if is_transparent || is_packed { None } else { Some(PaddingCheck::Struct) };
+    impl_block(ast, strct, Trait::AsBytes, true, padding_check)
 }
 
 const STRUCT_UNION_AS_BYTES_CFG: Config<StructRepr> = Config {
@@ -243,7 +315,7 @@ fn derive_as_bytes_enum(ast: &DeriveInput, enm: &DataEnum) -> proc_macro2::Token
     // We don't care what the repr is; we only care that it is one of the
     // allowed ones.
     let _: Vec<repr::EnumRepr> = try_or_print!(ENUM_AS_BYTES_CFG.validate_reprs(ast));
-    impl_block(ast, enm, "AsBytes", false, PaddingCheck::None)
+    impl_block(ast, enm, Trait::AsBytes, false, None)
 }
 
 #[rustfmt::skip]
@@ -285,7 +357,7 @@ fn derive_as_bytes_union(ast: &DeriveInput, unn: &DataUnion) -> proc_macro2::Tok
 
     try_or_print!(STRUCT_UNION_AS_BYTES_CFG.validate_reprs(ast));
 
-    impl_block(ast, unn, "AsBytes", true, PaddingCheck::Union)
+    impl_block(ast, unn, Trait::AsBytes, true, Some(PaddingCheck::Union))
 }
 
 // A struct is `Unaligned` if:
@@ -296,9 +368,9 @@ fn derive_as_bytes_union(ast: &DeriveInput, unn: &DataUnion) -> proc_macro2::Tok
 
 fn derive_unaligned_struct(ast: &DeriveInput, strct: &DataStruct) -> proc_macro2::TokenStream {
     let reprs = try_or_print!(STRUCT_UNION_UNALIGNED_CFG.validate_reprs(ast));
-    let require_trait_bound = !reprs.contains(&StructRepr::Packed);
+    let require_trait_bounds_on_field_types = !reprs.contains(&StructRepr::Packed);
 
-    impl_block(ast, strct, "Unaligned", require_trait_bound, PaddingCheck::None)
+    impl_block(ast, strct, Trait::Unaligned, require_trait_bounds_on_field_types, None)
 }
 
 const STRUCT_UNION_UNALIGNED_CFG: Config<StructRepr> = Config {
@@ -326,10 +398,10 @@ fn derive_unaligned_enum(ast: &DeriveInput, enm: &DataEnum) -> proc_macro2::Toke
     let _: Vec<repr::EnumRepr> = try_or_print!(ENUM_UNALIGNED_CFG.validate_reprs(ast));
 
     // C-like enums cannot currently have type parameters, so this value of true
-    // for `require_trait_bounds` doesn't really do anything. But it's
-    // marginally more future-proof in case that restriction is lifted in the
-    // future.
-    impl_block(ast, enm, "Unaligned", true, PaddingCheck::None)
+    // for `require_trait_bound_on_field_types` doesn't really do anything. But
+    // it's marginally more future-proof in case that restriction is lifted in
+    // the future.
+    impl_block(ast, enm, Trait::Unaligned, true, None)
 }
 
 #[rustfmt::skip]
@@ -365,28 +437,54 @@ const ENUM_UNALIGNED_CFG: Config<EnumRepr> = {
 
 fn derive_unaligned_union(ast: &DeriveInput, unn: &DataUnion) -> proc_macro2::TokenStream {
     let reprs = try_or_print!(STRUCT_UNION_UNALIGNED_CFG.validate_reprs(ast));
-    let require_trait_bound = !reprs.contains(&StructRepr::Packed);
+    let require_trait_bound_on_field_types = !reprs.contains(&StructRepr::Packed);
 
-    impl_block(ast, unn, "Unaligned", require_trait_bound, PaddingCheck::None)
+    impl_block(ast, unn, Trait::Unaligned, require_trait_bound_on_field_types, None)
 }
 
 // This enum describes what kind of padding check needs to be generated for the
 // associated impl.
 enum PaddingCheck {
-    // No additional padding check is required.
-    None,
     // Check that the sum of the fields' sizes exactly equals the struct's size.
     Struct,
     // Check that the size of each field exactly equals the union's size.
     Union,
 }
 
+impl PaddingCheck {
+    /// Returns the ident of the macro to call in order to validate that a type
+    /// passes the padding check encoded by `PaddingCheck`.
+    fn validator_macro_ident(&self) -> Ident {
+        let s = match self {
+            PaddingCheck::Struct => "struct_has_padding",
+            PaddingCheck::Union => "union_has_padding",
+        };
+
+        Ident::new(s, Span::call_site())
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Trait {
+    KnownLayout,
+    FromZeroes,
+    FromBytes,
+    AsBytes,
+    Unaligned,
+}
+
+impl Trait {
+    fn ident(&self) -> Ident {
+        Ident::new(format!("{:?}", self).as_str(), Span::call_site())
+    }
+}
+
 fn impl_block<D: DataExt>(
     input: &DeriveInput,
     data: &D,
-    trait_name: &str,
-    require_trait_bound: bool,
-    padding_check: PaddingCheck,
+    trt: Trait,
+    require_trait_bound_on_field_types: bool,
+    padding_check: Option<PaddingCheck>,
 ) -> proc_macro2::TokenStream {
     // In this documentation, we will refer to this hypothetical struct:
     //
@@ -402,22 +500,10 @@ fn impl_block<D: DataExt>(
     //       c: I::Item,
     //   }
     //
-    // First, we extract the field types, which in this case are `u8`, `T`, and
-    // `I::Item`. We use the names of the type parameters to split the field
-    // types into two sets - a set of types which are based on the type
-    // parameters, and a set of types which are not. First, we re-use the
-    // existing parameters and where clauses, generating an `impl` block like:
-    //
-    //   impl<T, I: Iterator> FromBytes for Foo<T, I>
-    //   where
-    //       T: Copy,
-    //       I: Clone,
-    //       I::Item: Clone,
-    //   {
-    //   }
-    //
-    // Then, we use the list of types which are based on the type parameters to
-    // generate new entries in the `where` clause:
+    // We extract the field types, which in this case are `u8`, `T`, and
+    // `I::Item`. We re-use the existing parameters and where clauses. If
+    // `require_trait_bound == true` (as it is for `FromBytes), we add where
+    // bounds for each field's type:
     //
     //   impl<T, I: Iterator> FromBytes for Foo<T, I>
     //   where
@@ -428,18 +514,6 @@ fn impl_block<D: DataExt>(
     //       I::Item: FromBytes,
     //   {
     //   }
-    //
-    // Finally, we use a different technique to generate the bounds for the
-    // types which are not based on type parameters:
-    //
-    //
-    //   fn only_derive_is_allowed_to_implement_this_trait() where Self: Sized {
-    //       struct ImplementsFromBytes<F: ?Sized + FromBytes>(PhantomData<F>);
-    //       let _: ImplementsFromBytes<u8>;
-    //   }
-    //
-    // It would be easier to put all types in the where clause, but that won't
-    // work until the trivial_bounds feature is stabilized (#48214).
     //
     // NOTE: It is standard practice to only emit bounds for the type parameters
     // themselves, not for field types based on those parameters (e.g., `T` vs
@@ -462,7 +536,6 @@ fn impl_block<D: DataExt>(
     //         b: PhantomData<&'b u8>,
     //     }
     //
-    //
     //     error[E0283]: type annotations required: cannot resolve `core::marker::PhantomData<&'a u8>: zerocopy::Unaligned`
     //      --> src/main.rs:6:10
     //       |
@@ -471,67 +544,59 @@ fn impl_block<D: DataExt>(
     //       |
     //       = note: required by `zerocopy::Unaligned`
 
-    // A visitor which is used to walk a field's type and determine whether any
-    // of its definition is based on the type or lifetime parameters on a type.
-    struct FromTypeParamVisit<'a, 'b>(&'a Punctuated<GenericParam, Comma>, &'b mut bool);
+    let type_ident = &input.ident;
+    let trait_ident = trt.ident();
+    let field_types = data.field_types();
 
-    impl<'a, 'b> Visit<'a> for FromTypeParamVisit<'a, 'b> {
-        fn visit_lifetime(&mut self, i: &'a Lifetime) {
-            visit::visit_lifetime(self, i);
-            if self.0.iter().any(|param| {
-                if let GenericParam::Lifetime(param) = param {
-                    param.lifetime.ident == i.ident
-                } else {
-                    false
-                }
-            }) {
-                *self.1 = true;
+    let field_type_bounds = require_trait_bound_on_field_types
+        .then(|| field_types.iter().map(|ty| parse_quote!(#ty: zerocopy::#trait_ident)))
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    // Don't bother emitting a padding check if there are no fields.
+    #[allow(unstable_name_collisions)] // See `BoolExt` below
+    let padding_check_bound = padding_check.and_then(|check| (!field_types.is_empty()).then_some(check)).map(|check| {
+        let fields = field_types.iter();
+        let validator_macro = check.validator_macro_ident();
+        parse_quote!(
+            zerocopy::macro_util::HasPadding<#type_ident, {zerocopy::#validator_macro!(#type_ident, #(#fields),*)}>:
+                zerocopy::macro_util::ShouldBe<false>
+        )
+    });
+
+    let bounds = input
+        .generics
+        .where_clause
+        .as_ref()
+        .map(|where_clause| where_clause.predicates.iter())
+        .into_iter()
+        .flatten()
+        .chain(field_type_bounds.iter())
+        .chain(padding_check_bound.iter());
+
+    let layout_extras = if trt == Trait::KnownLayout {
+        // We currently only support deriving for sized types; this code will
+        // fail to compile for unsized types.
+        Some(quote!(
+            const LAYOUT: zerocopy::DstLayout = zerocopy::DstLayout::for_type::<Self>();
+
+            // SAFETY: `.cast` preserves address and provenance.
+            //
+            // TODO(#429): Add documentation to `.cast` that promises that
+            // it preserves provenance.
+            #[inline(always)]
+            fn raw_from_ptr_len(
+                bytes: ::core::ptr::NonNull<u8>,
+                _elems: usize,
+            ) -> ::core::ptr::NonNull<Self> {
+                bytes.cast::<Self>()
             }
-        }
-
-        fn visit_type_path(&mut self, i: &'a TypePath) {
-            visit::visit_type_path(self, i);
-            if self.0.iter().any(|param| {
-                if let GenericParam::Type(param) = param {
-                    i.path.segments.first().unwrap().ident == param.ident
-                } else {
-                    false
-                }
-            }) {
-                *self.1 = true;
-            }
-        }
-    }
-
-    // Whether this type is based on one of the type parameters. E.g., given the
-    // type parameters `<T>`, `T`, `T::Foo`, and `(T::Foo, String)` are all
-    // based on the type parameters, while `String` and `(String, Box<()>)` are
-    // not.
-    let is_from_type_param = |ty: &Type| {
-        let mut ret = false;
-        FromTypeParamVisit(&input.generics.params, &mut ret).visit_type(ty);
-        ret
+        ))
+    } else {
+        None
     };
 
-    let trait_ident = Ident::new(trait_name, Span::call_site());
-
-    let field_types = data.nested_types();
-    let type_param_field_types = field_types.iter().filter(|ty| is_from_type_param(ty));
-    let non_type_param_field_types = field_types.iter().filter(|ty| !is_from_type_param(ty));
-
-    // Add a new set of where clause predicates of the form `T: Trait` for each
-    // of the types of the struct's fields (but only the ones whose types are
-    // based on one of the type parameters).
-    let mut generics = input.generics.clone();
-    let where_clause = generics.make_where_clause();
-    if require_trait_bound {
-        for ty in type_param_field_types {
-            let bound = parse_quote!(#ty: zerocopy::#trait_ident);
-            where_clause.predicates.push(bound);
-        }
-    }
-
-    let type_ident = &input.ident;
     // The parameters with trait bounds, but without type defaults.
     let params = input.generics.params.clone().into_iter().map(|mut param| {
         match &mut param {
@@ -551,75 +616,40 @@ fn impl_block<D: DataExt>(
         GenericParam::Const(cnst) => quote!(#cnst),
     });
 
-    if require_trait_bound {
-        for ty in non_type_param_field_types {
-            where_clause.predicates.push(parse_quote!(#ty: zerocopy::#trait_ident));
-        }
-    }
-
-    match (field_types.is_empty(), padding_check) {
-        (true, _) | (false, PaddingCheck::None) => (),
-        (false, PaddingCheck::Struct) => {
-            let fields = field_types.iter();
-            // `parse_quote!` doesn't parse macro invocations in const generics
-            // properly without enabling syn's `full` feature, so the type has
-            // to be manually constructed as `syn::Type::Verbatim`.
-            //
-            // This where clause is equivalent to adding:
-            // ```
-            // HasPadding<Foo, {struct_has_padding!(Foo, a, b, ...)}>: ShouldBe<false>
-            // ```
-            // with fully-qualified paths.
-            where_clause.predicates.push(syn::WherePredicate::Type(syn::PredicateType {
-                lifetimes: None,
-                bounded_ty: syn::Type::Verbatim(quote!(zerocopy::derive_util::HasPadding<#type_ident, {zerocopy::struct_has_padding!(#type_ident, #(#fields),*)}>)),
-                colon_token: syn::Token![:](Span::mixed_site()),
-                bounds: parse_quote!(zerocopy::derive_util::ShouldBe<false>),
-            }));
-        }
-        (false, PaddingCheck::Union) => {
-            let fields = field_types.iter();
-            // `parse_quote!` doesn't parse macro invocations in const generics
-            // properly without enabling syn's `full` feature, so the type has
-            // to be manually constructed as `syn::Type::Verbatim`.
-            //
-            // This where clause is equivalent to adding:
-            // ```
-            // HasPadding<Foo, {union_has_padding!(Foo, a, b, ...)}>: ShouldBe<false>
-            // ```
-            // with fully-qualified paths.
-            where_clause.predicates.push(syn::WherePredicate::Type(syn::PredicateType {
-                lifetimes: None,
-                bounded_ty: syn::Type::Verbatim(quote!(zerocopy::derive_util::HasPadding<#type_ident, {zerocopy::union_has_padding!(#type_ident, #(#fields),*)}>)),
-                colon_token: syn::Token![:](Span::mixed_site()),
-                bounds: parse_quote!(zerocopy::derive_util::ShouldBe<false>),
-            }));
-        }
-    }
-
-    // We use a constant to force the compiler to emit an error when a concrete
-    // type does not satisfy the where clauses on its impl.
-    let use_concrete = if input.generics.params.is_empty() {
-        Some(quote! {
-            const _: () = {
-                fn must_implement_trait<T: zerocopy::#trait_ident + ?::core::marker::Sized>() {}
-                let _ = must_implement_trait::<#type_ident>;
-            };
-        })
-    } else {
-        None
-    };
-
     quote! {
-        unsafe impl < #(#params),* > zerocopy::#trait_ident for #type_ident < #(#param_idents),* > #where_clause {
+        // TODO(#553): Add a test that generates a warning when
+        // `#[allow(deprecated)]` isn't present.
+        #[allow(deprecated)]
+        unsafe impl < #(#params),* > zerocopy::#trait_ident for #type_ident < #(#param_idents),* >
+        where
+            #(#bounds,)*
+        {
             fn only_derive_is_allowed_to_implement_this_trait() {}
+
+            #layout_extras
         }
-        #use_concrete
     }
 }
 
 fn print_all_errors(errors: Vec<Error>) -> proc_macro2::TokenStream {
     errors.iter().map(Error::to_compile_error).collect()
+}
+
+// A polyfill for `Option::then_some`, which was added after our MSRV.
+//
+// TODO(#67): Remove this once our MSRV is >= 1.62.
+trait BoolExt {
+    fn then_some<T>(self, t: T) -> Option<T>;
+}
+
+impl BoolExt for bool {
+    fn then_some<T>(self, t: T) -> Option<T> {
+        if self {
+            Some(t)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

@@ -562,66 +562,25 @@ pub fn elem_exp_consttime<M>(
         table.split_at_mut(TABLE_ENTRIES * num_limbs)
     };
 
-    fn entry(table: &[Limb], i: usize, num_limbs: usize) -> &[Limb] {
-        &table[(i * num_limbs)..][..num_limbs]
-    }
-    fn entry_mut(table: &mut [Limb], i: usize, num_limbs: usize) -> &mut [Limb] {
-        &mut table[(i * num_limbs)..][..num_limbs]
-    }
-
-    const ACC: usize = 0; // `tmp` in OpenSSL
-    const BASE: usize = ACC + 1; // `am` in OpenSSL
-    const M: usize = BASE + 1; // `np` in OpenSSL
-
-    entry_mut(state, BASE, num_limbs).copy_from_slice(&base.limbs);
-    entry_mut(state, M, num_limbs).copy_from_slice(m.limbs());
-
-    fn scatter(table: &mut [Limb], state: &[Limb], i: Window, num_limbs: usize) {
+    fn scatter(table: &mut [Limb], acc: &[Limb], i: Window, num_limbs: usize) {
         prefixed_extern! {
             fn bn_scatter5(a: *const Limb, a_len: c::size_t, table: *mut Limb, i: Window);
         }
-        unsafe {
-            bn_scatter5(
-                entry(state, ACC, num_limbs).as_ptr(),
-                num_limbs,
-                table.as_mut_ptr(),
-                i,
-            )
-        }
+        unsafe { bn_scatter5(acc.as_ptr(), num_limbs, table.as_mut_ptr(), i) }
     }
 
-    fn gather(table: &[Limb], state: &mut [Limb], i: Window, num_limbs: usize) {
+    fn gather(table: &[Limb], acc: &mut [Limb], i: Window, num_limbs: usize) {
         prefixed_extern! {
             fn bn_gather5(r: *mut Limb, a_len: c::size_t, table: *const Limb, i: Window);
         }
-        unsafe {
-            bn_gather5(
-                entry_mut(state, ACC, num_limbs).as_mut_ptr(),
-                num_limbs,
-                table.as_ptr(),
-                i,
-            )
-        }
+        unsafe { bn_gather5(acc.as_mut_ptr(), num_limbs, table.as_ptr(), i) }
     }
 
-    fn gather_square(
+    fn limbs_mul_mont_gather5_amm(
         table: &[Limb],
-        state: &mut [Limb],
-        n0: &N0,
-        i: Window,
-        num_limbs: usize,
-        cpu_features: cpu::Features,
-    ) {
-        gather(table, state, i, num_limbs);
-        assert_eq!(ACC, 0);
-        let (acc, rest) = state.split_at_mut(num_limbs);
-        let m = entry(rest, M - 1, num_limbs);
-        limbs_mont_square(acc, m, n0, cpu_features);
-    }
-
-    fn gather_mul_base_amm(
-        table: &[Limb],
-        state: &mut [Limb],
+        acc: &mut [Limb],
+        base: &[Limb],
+        m: &[Limb],
         n0: &N0,
         i: Window,
         num_limbs: usize,
@@ -639,10 +598,10 @@ pub fn elem_exp_consttime<M>(
         }
         unsafe {
             bn_mul_mont_gather5(
-                entry_mut(state, ACC, num_limbs).as_mut_ptr(),
-                entry(state, BASE, num_limbs).as_ptr(),
+                acc.as_mut_ptr(),
+                base.as_ptr(),
                 table.as_ptr(),
-                entry(state, M, num_limbs).as_ptr(),
+                m.as_ptr(),
                 n0,
                 num_limbs,
                 i,
@@ -650,7 +609,14 @@ pub fn elem_exp_consttime<M>(
         }
     }
 
-    fn power_amm(table: &[Limb], state: &mut [Limb], n0: &N0, i: Window, num_limbs: usize) {
+    fn power_amm(
+        table: &[Limb],
+        acc: &mut [Limb],
+        m_cached: &[Limb],
+        n0: &N0,
+        i: Window,
+        num_limbs: usize,
+    ) {
         prefixed_extern! {
             fn bn_power5(
                 r: *mut Limb,
@@ -664,10 +630,10 @@ pub fn elem_exp_consttime<M>(
         }
         unsafe {
             bn_power5(
-                entry_mut(state, ACC, num_limbs).as_mut_ptr(),
-                entry_mut(state, ACC, num_limbs).as_mut_ptr(),
+                acc.as_mut_ptr(),
+                acc.as_ptr(),
                 table.as_ptr(),
-                entry(state, M, num_limbs).as_ptr(),
+                m_cached.as_ptr(),
                 n0,
                 num_limbs,
                 i,
@@ -675,42 +641,81 @@ pub fn elem_exp_consttime<M>(
         }
     }
 
-    // table[0] = base**0.
-    {
-        let acc = entry_mut(state, ACC, num_limbs);
-        acc[0] = 1;
-        limbs_mont_mul(acc, &m.oneRR().0.limbs, m.limbs(), m.n0(), cpu_features);
+    // These are named `(tmp, am, np)` in BoringSSL.
+    let (acc, base_cached, m_cached): (&mut [Limb], &[Limb], &[Limb]) = {
+        let (acc, rest) = state.split_at_mut(num_limbs);
+        let (base_cached, rest) = rest.split_at_mut(num_limbs);
+
+        // Upstream, the input `base` is not Montgomery-encoded, so they compute a
+        // Montgomery-encoded copy and store it here.
+        base_cached.copy_from_slice(&base.limbs);
+
+        let m_cached = &mut rest[..num_limbs];
+        // "To improve cache locality" according to upstream.
+        m_cached.copy_from_slice(m.limbs());
+
+        (acc, base_cached, m_cached)
+    };
+
+    let n0 = m.n0();
+
+    // Fill in all the powers of 2 of `acc` into the table using only squaring and without any
+    // gathering, storing the last calculated power into `acc`.
+    fn scatter_powers_of_2(
+        table: &mut [Limb],
+        acc: &mut [Limb],
+        m_cached: &[Limb],
+        n0: &N0,
+        mut i: Window,
+        num_limbs: usize,
+        cpu_features: cpu::Features,
+    ) {
+        loop {
+            scatter(table, acc, i, num_limbs);
+            i *= 2;
+            if i >= (TABLE_ENTRIES as Window) {
+                break;
+            }
+            limbs_mont_square(acc, m_cached, n0, cpu_features);
+        }
     }
-    scatter(table, state, 0, num_limbs);
 
-    // table[1] = base**1.
-    entry_mut(state, ACC, num_limbs).copy_from_slice(&base.limbs);
-    scatter(table, state, 1, num_limbs);
+    // All entries in `table` will be Montgomery encoded.
 
-    for i in 2..(TABLE_ENTRIES as Window) {
-        if i % 2 == 0 {
-            // TODO: Optimize this to avoid gathering
-            gather_square(table, state, m.n0(), i / 2, num_limbs, cpu_features);
-        } else {
-            gather_mul_base_amm(table, state, m.n0(), i - 1, num_limbs)
-        };
-        scatter(table, state, i, num_limbs);
+    // acc = table[0] = base**0 (i.e. 1).
+    // `acc` was initialized to zero and hasn't changed. Change it to 1 and then Montgomery
+    // encode it.
+    debug_assert!(acc.iter().all(|&value| value == 0));
+    acc[0] = 1;
+    limbs_mont_mul(acc, &m.oneRR().0.limbs, m_cached, n0, cpu_features);
+    scatter(table, acc, 0, num_limbs);
+
+    // acc = base**1 (i.e. base).
+    acc.copy_from_slice(base_cached);
+
+    // Fill in entries 1, 2, 4, 8, 16.
+    scatter_powers_of_2(table, acc, m_cached, n0, 1, num_limbs, cpu_features);
+    // Fill in entries 3, 6, 12, 24; 5, 10, 20, 30; 7, 14, 28; 9, 18; 11, 22; 13, 26; 15, 30;
+    // 17; 19; 21; 23; 25; 27; 29; 31.
+    for i in (3..(TABLE_ENTRIES as Window)).step_by(2) {
+        limbs_mul_mont_gather5_amm(table, acc, base_cached, m_cached, n0, i - 1, num_limbs);
+        scatter_powers_of_2(table, acc, m_cached, n0, i, num_limbs, cpu_features);
     }
 
-    let state = limb::fold_5_bit_windows(
+    let acc = limb::fold_5_bit_windows(
         exponent.limbs(),
         |initial_window| {
-            gather(table, state, initial_window, num_limbs);
-            state
+            gather(table, acc, initial_window, num_limbs);
+            acc
         },
-        |state, window| {
-            power_amm(table, state, m.n0(), window, num_limbs);
-            state
+        |acc, window| {
+            power_amm(table, acc, m_cached, n0, window, num_limbs);
+            acc
         },
     );
 
     let mut r_amm = base.limbs;
-    r_amm.copy_from_slice(entry(state, ACC, num_limbs));
+    r_amm.copy_from_slice(acc);
 
     Ok(from_montgomery_amm(r_amm, m))
 }

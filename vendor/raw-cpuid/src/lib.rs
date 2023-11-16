@@ -57,24 +57,17 @@ pub mod display;
 mod extended;
 #[cfg(test)]
 mod tests;
-#[cfg(feature = "serialize")]
-#[macro_use]
-extern crate serde_derive;
+
+use bitflags::bitflags;
+use core::fmt::{self, Debug, Formatter};
+use core::mem::size_of;
+use core::slice;
+use core::str;
 
 #[cfg(feature = "serialize")]
-extern crate serde;
+use serde_derive::{Deserialize, Serialize};
 
-#[macro_use]
-extern crate bitflags;
-
-#[cfg(all(
-    feature = "serialize",
-    not(any(
-        all(target_arch = "x86", not(target_env = "sgx"), target_feature = "sse"),
-        all(target_arch = "x86_64", not(target_env = "sgx"))
-    ))
-))]
-core::compile_error!("Feature `serialize` is not supported on targets that do not have native cpuid. x86 and x86_64 targets with SGX and x86 targets without SSE are consider to not have native cpuid.");
+pub use extended::*;
 
 /// Uses Rust's `cpuid` function from the `arch` module.
 #[cfg(any(
@@ -101,14 +94,23 @@ pub mod native_cpuid {
             edx: result.edx,
         }
     }
+    /// The native reader uses the cpuid instruction to read the cpuid data from the
+    /// CPU we're currently running on directly.
+    #[derive(Clone, Copy)]
+    pub struct CpuIdReaderNative;
+
+    impl super::CpuIdReader for CpuIdReaderNative {
+        fn cpuid2(&self, eax: u32, ecx: u32) -> CpuIdResult {
+            cpuid_count(eax, ecx)
+        }
+    }
 }
 
-use core::fmt::{self, Debug, Formatter};
-use core::mem::size_of;
-use core::slice;
-use core::str;
-
-pub use extended::*;
+#[cfg(any(
+    all(target_arch = "x86", not(target_env = "sgx"), target_feature = "sse"),
+    all(target_arch = "x86_64", not(target_env = "sgx"))
+))]
+pub use native_cpuid::CpuIdReaderNative;
 
 #[cfg(not(test))]
 mod std {
@@ -175,39 +177,23 @@ macro_rules! check_bit_fn {
 /// Implements function to read/write cpuid.
 /// This allows to conveniently swap out the underlying cpuid implementation
 /// with one that returns data that is deterministic (for unit-testing).
-#[derive(Debug, Clone, Copy)]
-struct CpuIdReader {
-    cpuid_fn: fn(u32, u32) -> CpuIdResult,
-}
-
-impl CpuIdReader {
-    fn new(cpuid_fn: fn(u32, u32) -> CpuIdResult) -> Self {
-        Self { cpuid_fn }
-    }
-
+pub trait CpuIdReader: Clone {
     fn cpuid1(&self, eax: u32) -> CpuIdResult {
-        (self.cpuid_fn)(eax, 0)
+        self.cpuid2(eax, 0)
     }
-
-    fn cpuid2(&self, eax: u32, ecx: u32) -> CpuIdResult {
-        (self.cpuid_fn)(eax, ecx)
-    }
+    fn cpuid2(&self, eax: u32, ecx: u32) -> CpuIdResult;
 }
 
-#[cfg(any(
-    all(target_arch = "x86", not(target_env = "sgx"), target_feature = "sse"),
-    all(target_arch = "x86_64", not(target_env = "sgx"))
-))]
-impl Default for CpuIdReader {
-    fn default() -> Self {
-        Self {
-            cpuid_fn: native_cpuid::cpuid_count,
-        }
+impl<F> CpuIdReader for F
+where
+    F: Fn(u32, u32) -> CpuIdResult + Clone,
+{
+    fn cpuid2(&self, eax: u32, ecx: u32) -> CpuIdResult {
+        self(eax, ecx)
     }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 enum Vendor {
     Intel,
     Amd,
@@ -233,12 +219,11 @@ impl Vendor {
 /// The main type used to query information about the CPU we're running on.
 ///
 /// Other structs can be accessed by going through this type.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[derive(Clone, Copy)]
-pub struct CpuId {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
-    /// CPU vendor to differntiate cases where logic needs to differ in code .
+pub struct CpuId<R: CpuIdReader> {
+    /// A generic reader to abstract the cpuid interface.
+    read: R,
+    /// CPU vendor to differentiate cases where logic needs to differ in code .
     vendor: Vendor,
     /// How many basic leafs are supported (EAX < EAX_HYPERVISOR_INFO)
     supported_leafs: u32,
@@ -250,9 +235,21 @@ pub struct CpuId {
     all(target_arch = "x86", not(target_env = "sgx"), target_feature = "sse"),
     all(target_arch = "x86_64", not(target_env = "sgx"))
 ))]
-impl Default for CpuId {
-    fn default() -> CpuId {
-        CpuId::with_cpuid_fn(native_cpuid::cpuid_count)
+impl Default for CpuId<CpuIdReaderNative> {
+    /// Create a new `CpuId` instance.
+    fn default() -> Self {
+        CpuId::with_cpuid_fn(CpuIdReaderNative)
+    }
+}
+
+#[cfg(any(
+    all(target_arch = "x86", not(target_env = "sgx"), target_feature = "sse"),
+    all(target_arch = "x86_64", not(target_env = "sgx"))
+))]
+impl CpuId<CpuIdReaderNative> {
+    /// Create a new `CpuId` instance.
+    pub fn new() -> Self {
+        CpuId::default()
     }
 }
 
@@ -333,30 +330,29 @@ const EAX_PROCESSOR_TOPOLOGY_INFO: u32 = 0x8000_001E;
 const EAX_MEMORY_ENCRYPTION_INFO: u32 = 0x8000_001F;
 const EAX_SVM_FEATURES: u32 = 0x8000_000A;
 
-impl CpuId {
-    /// Return new CpuId struct.
-    #[cfg(any(
-        all(target_arch = "x86", not(target_env = "sgx"), target_feature = "sse"),
-        all(target_arch = "x86_64", not(target_env = "sgx"))
-    ))]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
+impl<R: CpuIdReader> CpuId<R> {
     /// Return new CpuId struct with custom reader function.
     ///
     /// This is useful for example when testing code or if we want to interpose
     /// on the CPUID calls this library makes.
-    pub fn with_cpuid_fn(cpuid_fn: fn(u32, u32) -> CpuIdResult) -> Self {
-        let read = CpuIdReader::new(cpuid_fn);
-        let vendor_leaf = read.cpuid1(EAX_VENDOR_INFO);
-        let extended_leaf = read.cpuid1(EAX_EXTENDED_FUNCTION_INFO);
+    pub fn with_cpuid_reader(cpuid_fn: R) -> Self {
+        let vendor_leaf = cpuid_fn.cpuid1(EAX_VENDOR_INFO);
+        let extended_leaf = cpuid_fn.cpuid1(EAX_EXTENDED_FUNCTION_INFO);
         CpuId {
             supported_leafs: vendor_leaf.eax,
             supported_extended_leafs: extended_leaf.eax,
             vendor: Vendor::from_vendor_leaf(vendor_leaf),
-            read,
+            read: cpuid_fn,
         }
+    }
+
+    /// See [`CpuId::with_cpuid_reader`].
+    ///
+    /// # Note
+    /// This function will likely be deprecated in the future. Use the identical
+    /// `with_cpuid_reader` function instead.
+    pub fn with_cpuid_fn(cpuid_fn: R) -> Self {
+        CpuId::with_cpuid_reader(cpuid_fn)
     }
 
     /// Check if a non extended leaf  (`val`) is supported.
@@ -405,9 +401,9 @@ impl CpuId {
                 vendor: self.vendor,
                 eax: res.eax,
                 ebx: res.ebx,
-                edx_ecx: FeatureInfoFlags {
-                    bits: (((res.edx as u64) << 32) | (res.ecx as u64)),
-                },
+                edx_ecx: FeatureInfoFlags::from_bits_truncate(
+                    ((res.edx as u64) << 32) | (res.ecx as u64),
+                ),
             })
         } else {
             None
@@ -460,12 +456,12 @@ impl CpuId {
     ///
     /// # Platforms
     /// 🟡 AMD ✅ Intel
-    pub fn get_cache_parameters(&self) -> Option<CacheParametersIter> {
+    pub fn get_cache_parameters(&self) -> Option<CacheParametersIter<R>> {
         if self.leaf_is_supported(EAX_CACHE_PARAMETERS)
             || (self.vendor == Vendor::Amd && self.leaf_is_supported(EAX_CACHE_PARAMETERS_AMD))
         {
             Some(CacheParametersIter {
-                read: self.read,
+                read: self.read.clone(),
                 leaf: if self.vendor == Vendor::Amd {
                     EAX_CACHE_PARAMETERS_AMD
                 } else {
@@ -504,9 +500,9 @@ impl CpuId {
         if self.leaf_is_supported(EAX_THERMAL_POWER_INFO) {
             let res = self.read.cpuid1(EAX_THERMAL_POWER_INFO);
             Some(ThermalPowerInfo {
-                eax: ThermalPowerFeaturesEax { bits: res.eax },
+                eax: ThermalPowerFeaturesEax::from_bits_truncate(res.eax),
                 ebx: res.ebx,
-                ecx: ThermalPowerFeaturesEcx { bits: res.ecx },
+                ecx: ThermalPowerFeaturesEcx::from_bits_truncate(res.ecx),
                 _edx: res.edx,
             })
         } else {
@@ -523,8 +519,8 @@ impl CpuId {
             let res = self.read.cpuid1(EAX_STRUCTURED_EXTENDED_FEATURE_INFO);
             Some(ExtendedFeatures {
                 _eax: res.eax,
-                ebx: ExtendedFeaturesEbx { bits: res.ebx },
-                ecx: ExtendedFeaturesEcx { bits: res.ecx },
+                ebx: ExtendedFeaturesEbx::from_bits_truncate(res.ebx),
+                ecx: ExtendedFeaturesEcx::from_bits_truncate(res.ecx),
                 _edx: res.edx,
             })
         } else {
@@ -554,7 +550,7 @@ impl CpuId {
             let res = self.read.cpuid1(EAX_PERFORMANCE_MONITOR_INFO);
             Some(PerformanceMonitoringInfo {
                 eax: res.eax,
-                ebx: PerformanceMonitoringFeaturesEbx { bits: res.ebx },
+                ebx: PerformanceMonitoringFeaturesEbx::from_bits_truncate(res.ebx),
                 _ecx: res.ecx,
                 edx: res.edx,
             })
@@ -571,10 +567,10 @@ impl CpuId {
     ///
     /// # Platforms
     /// ✅ AMD ✅ Intel
-    pub fn get_extended_topology_info(&self) -> Option<ExtendedTopologyIter> {
+    pub fn get_extended_topology_info(&self) -> Option<ExtendedTopologyIter<R>> {
         if self.leaf_is_supported(EAX_EXTENDED_TOPOLOGY_INFO) {
             Some(ExtendedTopologyIter {
-                read: self.read,
+                read: self.read.clone(),
                 level: 0,
                 is_v2: false,
             })
@@ -587,10 +583,10 @@ impl CpuId {
     ///
     /// # Platforms
     /// ❌ AMD ✅ Intel
-    pub fn get_extended_topology_info_v2(&self) -> Option<ExtendedTopologyIter> {
+    pub fn get_extended_topology_info_v2(&self) -> Option<ExtendedTopologyIter<R>> {
         if self.leaf_is_supported(EAX_EXTENDED_TOPOLOGY_INFO_V2) {
             Some(ExtendedTopologyIter {
-                read: self.read,
+                read: self.read.clone(),
                 level: 0,
                 is_v2: true,
             })
@@ -603,19 +599,19 @@ impl CpuId {
     ///
     /// # Platforms
     /// ✅ AMD ✅ Intel
-    pub fn get_extended_state_info(&self) -> Option<ExtendedStateInfo> {
+    pub fn get_extended_state_info(&self) -> Option<ExtendedStateInfo<R>> {
         if self.leaf_is_supported(EAX_EXTENDED_STATE_INFO) {
             let res = self.read.cpuid2(EAX_EXTENDED_STATE_INFO, 0);
             let res1 = self.read.cpuid2(EAX_EXTENDED_STATE_INFO, 1);
             Some(ExtendedStateInfo {
-                read: self.read,
-                eax: ExtendedStateInfoXCR0Flags { bits: res.eax },
+                read: self.read.clone(),
+                eax: ExtendedStateInfoXCR0Flags::from_bits_truncate(res.eax),
                 ebx: res.ebx,
                 ecx: res.ecx,
                 _edx: res.edx,
                 eax1: res1.eax,
                 ebx1: res1.ebx,
-                ecx1: ExtendedStateInfoXSSFlags { bits: res1.ecx },
+                ecx1: ExtendedStateInfoXSSFlags::from_bits_truncate(res1.ecx),
                 _edx1: res1.edx,
             })
         } else {
@@ -627,12 +623,12 @@ impl CpuId {
     ///
     /// # Platforms
     /// ❌ AMD ✅ Intel
-    pub fn get_rdt_monitoring_info(&self) -> Option<RdtMonitoringInfo> {
+    pub fn get_rdt_monitoring_info(&self) -> Option<RdtMonitoringInfo<R>> {
         let res = self.read.cpuid1(EAX_RDT_MONITORING);
 
         if self.leaf_is_supported(EAX_RDT_MONITORING) {
             Some(RdtMonitoringInfo {
-                read: self.read,
+                read: self.read.clone(),
                 ebx: res.ebx,
                 edx: res.edx,
             })
@@ -645,12 +641,12 @@ impl CpuId {
     ///
     /// # Platforms
     /// ❌ AMD ✅ Intel
-    pub fn get_rdt_allocation_info(&self) -> Option<RdtAllocationInfo> {
+    pub fn get_rdt_allocation_info(&self) -> Option<RdtAllocationInfo<R>> {
         let res = self.read.cpuid1(EAX_RDT_ALLOCATION);
 
         if self.leaf_is_supported(EAX_RDT_ALLOCATION) {
             Some(RdtAllocationInfo {
-                read: self.read,
+                read: self.read.clone(),
                 ebx: res.ebx,
             })
         } else {
@@ -662,14 +658,14 @@ impl CpuId {
     ///
     /// # Platforms
     /// ❌ AMD ✅ Intel
-    pub fn get_sgx_info(&self) -> Option<SgxInfo> {
+    pub fn get_sgx_info(&self) -> Option<SgxInfo<R>> {
         // Leaf 12H sub-leaf 0 (ECX = 0) is supported if CPUID.(EAX=07H, ECX=0H):EBX[SGX] = 1.
         self.get_extended_feature_info().and_then(|info| {
             if self.leaf_is_supported(EAX_SGX) && info.has_sgx() {
                 let res = self.read.cpuid2(EAX_SGX, 0);
                 let res1 = self.read.cpuid2(EAX_SGX, 1);
                 Some(SgxInfo {
-                    read: self.read,
+                    read: self.read.clone(),
                     eax: res.eax,
                     ebx: res.ebx,
                     _ecx: res.ecx,
@@ -748,11 +744,11 @@ impl CpuId {
     ///
     /// # Platforms
     /// ❌ AMD ✅ Intel
-    pub fn get_soc_vendor_info(&self) -> Option<SoCVendorInfo> {
+    pub fn get_soc_vendor_info(&self) -> Option<SoCVendorInfo<R>> {
         if self.leaf_is_supported(EAX_SOC_VENDOR_INFO) {
             let res = self.read.cpuid1(EAX_SOC_VENDOR_INFO);
             Some(SoCVendorInfo {
-                read: self.read,
+                read: self.read.clone(),
                 eax: res.eax,
                 ebx: res.ebx,
                 ecx: res.ecx,
@@ -767,13 +763,13 @@ impl CpuId {
     ///
     /// # Platforms
     /// ❌ AMD ✅ Intel
-    pub fn get_deterministic_address_translation_info(&self) -> Option<DatIter> {
+    pub fn get_deterministic_address_translation_info(&self) -> Option<DatIter<R>> {
         if self.leaf_is_supported(EAX_DETERMINISTIC_ADDRESS_TRANSLATION_INFO) {
             let res = self
                 .read
                 .cpuid2(EAX_DETERMINISTIC_ADDRESS_TRANSLATION_INFO, 0);
             Some(DatIter {
-                read: self.read,
+                read: self.read.clone(),
                 current: 0,
                 count: res.eax,
             })
@@ -787,23 +783,22 @@ impl CpuId {
     ///
     /// # Platform
     /// Needs to be a virtual CPU to be supported.
-    pub fn get_hypervisor_info(&self) -> Option<HypervisorInfo> {
+    pub fn get_hypervisor_info(&self) -> Option<HypervisorInfo<R>> {
         // We only fetch HypervisorInfo, if the Hypervisor-Flag is set.
         // See https://github.com/gz/rust-cpuid/issues/52
         self.get_feature_info()
             .filter(|fi| fi.has_hypervisor())
-            .map(|_| {
+            .and_then(|_| {
                 let res = self.read.cpuid1(EAX_HYPERVISOR_INFO);
                 if res.eax > 0 {
                     Some(HypervisorInfo {
-                        read: self.read,
+                        read: self.read.clone(),
                         res,
                     })
                 } else {
                     None
                 }
             })
-            .flatten()
     }
 
     /// Extended Processor and Processor Feature Identifiers (LEAF=0x8000_0001).
@@ -969,7 +964,7 @@ impl CpuId {
     }
 }
 
-impl Debug for CpuId {
+impl<R: CpuIdReader> Debug for CpuId<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CpuId")
             .field("vendor", &self.vendor)
@@ -1053,7 +1048,6 @@ impl Debug for CpuId {
 /// # Platforms
 /// ✅ AMD ✅ Intel
 #[derive(PartialEq, Eq)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[repr(C)]
 pub struct VendorInfo {
     ebx: u32,
@@ -1105,7 +1099,6 @@ impl fmt::Display for VendorInfo {
 /// # Platforms
 /// ❌ AMD ✅ Intel
 #[derive(PartialEq, Eq, Clone)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct CacheInfoIter {
     current: u32,
     eax: u32,
@@ -1172,7 +1165,6 @@ impl Debug for CacheInfoIter {
 
 /// What type of cache are we dealing with?
 #[derive(Copy, Clone, Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub enum CacheInfoType {
     General,
     Cache,
@@ -1184,7 +1176,6 @@ pub enum CacheInfoType {
 
 /// Describes any kind of cache (TLB, Data and Instruction caches plus prefetchers).
 #[derive(Copy, Clone)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct CacheInfo {
     /// Number as retrieved from cpuid
     pub num: u8,
@@ -1785,7 +1776,6 @@ pub const CACHE_INFO_TABLE: [CacheInfo; 108] = [
 /// # Platforms
 /// ❌ AMD ✅ Intel
 #[derive(PartialEq, Eq)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct ProcessorSerial {
     /// Lower bits
     ecx: u32,
@@ -1841,7 +1831,6 @@ impl Debug for ProcessorSerial {
 ///
 /// # Platforms
 /// ✅ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct FeatureInfo {
     vendor: Vendor,
     eax: u32,
@@ -2442,9 +2431,9 @@ impl Debug for FeatureInfo {
 }
 
 bitflags! {
-    #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct FeatureInfoFlags: u64 {
-
         // ECX flags
 
         /// Streaming SIMD Extensions 3 (SSE3). A value of 1 indicates the processor supports this technology.
@@ -2576,16 +2565,14 @@ bitflags! {
 ///
 /// # Platforms
 /// 🟡 AMD ✅ Intel
-#[derive(Clone)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct CacheParametersIter {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+#[derive(Clone, Copy)]
+pub struct CacheParametersIter<R: CpuIdReader> {
+    read: R,
     leaf: u32,
     current: u32,
 }
 
-impl Iterator for CacheParametersIter {
+impl<R: CpuIdReader> Iterator for CacheParametersIter<R> {
     type Item = CacheParameter;
 
     /// Iterate over all cache info subleafs for this CPU.
@@ -2613,7 +2600,7 @@ impl Iterator for CacheParametersIter {
     }
 }
 
-impl Debug for CacheParametersIter {
+impl<R: CpuIdReader> Debug for CacheParametersIter<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let mut debug = f.debug_list();
         self.clone().for_each(|ref item| {
@@ -2628,7 +2615,6 @@ impl Debug for CacheParametersIter {
 /// # Platforms
 /// 🟡 AMD ✅ Intel
 #[derive(Copy, Clone, Eq, PartialEq)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct CacheParameter {
     eax: u32,
     ebx: u32,
@@ -2638,7 +2624,6 @@ pub struct CacheParameter {
 
 /// Info about a what a given cache caches (instructions, data, etc.)
 #[derive(PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub enum CacheType {
     /// Null - No more caches
     Null = 0,
@@ -2810,7 +2795,6 @@ impl Debug for CacheParameter {
 /// # Platforms
 /// 🟡 AMD ✅ Intel
 #[derive(Eq, PartialEq)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct MonitorMwaitInfo {
     eax: u32,
     ebx: u32,
@@ -2942,7 +2926,6 @@ impl Debug for MonitorMwaitInfo {
 ///
 /// # Platforms
 /// 🟡 AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct ThermalPowerInfo {
     eax: ThermalPowerFeaturesEax,
     ebx: u32,
@@ -3177,7 +3160,6 @@ impl Debug for ThermalPowerInfo {
 }
 
 bitflags! {
-    #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
     struct ThermalPowerFeaturesEax: u32 {
         /// Digital temperature sensor is supported if set. (Bit 00)
         const DTS = 1 << 0;
@@ -3226,7 +3208,6 @@ bitflags! {
 }
 
 bitflags! {
-    #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
     struct ThermalPowerFeaturesEcx: u32 {
         const HW_COORD_FEEDBACK = 1 << 0;
 
@@ -3239,7 +3220,6 @@ bitflags! {
 ///
 /// # Platforms
 /// 🟡 AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct ExtendedFeatures {
     _eax: u32,
     ebx: ExtendedFeaturesEbx,
@@ -3704,7 +3684,8 @@ impl Debug for ExtendedFeatures {
 }
 
 bitflags! {
-    #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ExtendedFeaturesEbx: u32 {
         /// FSGSBASE. Supports RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE if 1. (Bit 00)
         const FSGSBASE = 1 << 0;
@@ -3773,7 +3754,8 @@ bitflags! {
 }
 
 bitflags! {
-    #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ExtendedFeaturesEcx: u32 {
         /// Bit 0: Prefetch WT1. (Intel® Xeon Phi™ only).
         const PREFETCHWT1 = 1 << 0;
@@ -3830,7 +3812,6 @@ bitflags! {
 ///
 /// # Platforms
 /// ❌ AMD (reserved) ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct DirectCacheAccessInfo {
     eax: u32,
 }
@@ -3854,7 +3835,6 @@ impl Debug for DirectCacheAccessInfo {
 ///
 /// # Platforms
 /// ❌ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct PerformanceMonitoringInfo {
     eax: u32,
     ebx: PerformanceMonitoringFeaturesEbx,
@@ -3967,7 +3947,8 @@ impl Debug for PerformanceMonitoringInfo {
 }
 
 bitflags! {
-    #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct PerformanceMonitoringFeaturesEbx: u32 {
         /// Core cycle event not available if 1. (Bit 0)
         const CORE_CYC_EV_UNAVAILABLE = 1 << 0;
@@ -3995,10 +3976,8 @@ bitflags! {
 /// # Platforms
 /// ✅ AMD ✅ Intel
 #[derive(Clone)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct ExtendedTopologyIter {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct ExtendedTopologyIter<R: CpuIdReader> {
+    read: R,
     level: u32,
     is_v2: bool,
 }
@@ -4007,7 +3986,6 @@ pub struct ExtendedTopologyIter {
 ///
 /// How many cores, what type etc.
 #[derive(PartialEq, Eq)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct ExtendedTopologyLevel {
     eax: u32,
     ebx: u32,
@@ -4066,7 +4044,6 @@ impl ExtendedTopologyLevel {
 
 /// What type of core we have at this level in the topology (real CPU or hyper-threaded).
 #[derive(PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub enum TopologyType {
     Invalid = 0,
     /// Hyper-thread (Simultaneous multithreading)
@@ -4092,7 +4069,7 @@ impl fmt::Display for TopologyType {
     }
 }
 
-impl Iterator for ExtendedTopologyIter {
+impl<R: CpuIdReader> Iterator for ExtendedTopologyIter<R> {
     type Item = ExtendedTopologyLevel;
 
     fn next(&mut self) -> Option<ExtendedTopologyLevel> {
@@ -4117,7 +4094,7 @@ impl Iterator for ExtendedTopologyIter {
     }
 }
 
-impl Debug for ExtendedTopologyIter {
+impl<R: CpuIdReader> Debug for ExtendedTopologyIter<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let mut debug = f.debug_list();
         self.clone().for_each(|ref item| {
@@ -4128,7 +4105,8 @@ impl Debug for ExtendedTopologyIter {
 }
 
 bitflags! {
-    #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ExtendedStateInfoXCR0Flags: u32 {
         /// legacy x87 (Bit 00).
         const LEGACY_X87 = 1 << 0;
@@ -4159,17 +4137,42 @@ bitflags! {
 
         /// IA32_XSS HDC State (Bit 13).
         const IA32_XSS_HDC = 1 << 13;
+
+        /// AMX TILECFG state (Bit 17)
+        const AMX_TILECFG = 1 << 17;
+
+        /// AMX TILEDATA state (Bit 17)
+        const AMX_TILEDATA = 1 << 18;
     }
 }
 
 bitflags! {
-    #[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ExtendedStateInfoXSSFlags: u32 {
         /// IA32_XSS PT (Trace Packet) State (Bit 08).
         const PT = 1 << 8;
 
+        /// IA32_XSS PASID state (Bit 10)
+        const PASID = 1 << 10;
+
+        /// IA32_XSS CET user state (Bit 11)
+        const CET_USER = 1 << 11;
+
+        /// IA32_XSS CET supervisor state (Bit 12)
+        const CET_SUPERVISOR = 1 << 12;
+
         /// IA32_XSS HDC State (Bit 13).
         const HDC = 1 << 13;
+
+        /// IA32_XSS UINTR state (Bit 14)
+        const UINTR = 1 << 14;
+
+        /// IA32_XSS LBR state (Bit 15)
+        const LBR = 1 << 15;
+
+        /// IA32_XSS HWP state (Bit 16)
+        const HWP = 1 << 16;
     }
 }
 
@@ -4177,10 +4180,8 @@ bitflags! {
 ///
 /// # Platforms
 /// ✅ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct ExtendedStateInfo {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct ExtendedStateInfo<R: CpuIdReader> {
+    read: R,
     eax: ExtendedStateInfoXCR0Flags,
     ebx: u32,
     ecx: u32,
@@ -4191,7 +4192,7 @@ pub struct ExtendedStateInfo {
     _edx1: u32,
 }
 
-impl ExtendedStateInfo {
+impl<F: CpuIdReader> ExtendedStateInfo<F> {
     check_flag!(
         doc = "Support for legacy x87 in XCR0.",
         xcr0_supports_legacy_x87,
@@ -4309,9 +4310,9 @@ impl ExtendedStateInfo {
     }
 
     /// Iterator over extended state enumeration levels >= 2.
-    pub fn iter(&self) -> ExtendedStateIter {
+    pub fn iter(&self) -> ExtendedStateIter<F> {
         ExtendedStateIter {
-            read: self.read,
+            read: self.read.clone(),
             level: 1,
             supported_xcr0: self.eax.bits(),
             supported_xss: self.ecx1.bits(),
@@ -4319,7 +4320,7 @@ impl ExtendedStateInfo {
     }
 }
 
-impl Debug for ExtendedStateInfo {
+impl<R: CpuIdReader> Debug for ExtendedStateInfo<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ExtendedStateInfo")
             .field("eax", &self.eax)
@@ -4344,10 +4345,8 @@ impl Debug for ExtendedStateInfo {
 
 /// Yields [ExtendedState] structs.
 #[derive(Clone)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct ExtendedStateIter {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct ExtendedStateIter<R: CpuIdReader> {
+    read: R,
     level: u32,
     supported_xcr0: u32,
     supported_xss: u32,
@@ -4359,7 +4358,7 @@ pub struct ExtendedStateIter {
 ///
 /// The iterator goes over the valid sub-leaves and obtain size and offset
 /// information for each processor extended state save area:
-impl Iterator for ExtendedStateIter {
+impl<R: CpuIdReader> Iterator for ExtendedStateIter<R> {
     type Item = ExtendedState;
 
     fn next(&mut self) -> Option<ExtendedState> {
@@ -4383,7 +4382,7 @@ impl Iterator for ExtendedStateIter {
     }
 }
 
-impl Debug for ExtendedStateIter {
+impl<R: CpuIdReader> Debug for ExtendedStateIter<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut debug = f.debug_list();
         self.clone().for_each(|ref item| {
@@ -4395,7 +4394,6 @@ impl Debug for ExtendedStateIter {
 
 /// What kidn of extended register state this is.
 #[derive(PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[repr(u32)]
 pub enum ExtendedRegisterType {
     Avx,
@@ -4450,7 +4448,6 @@ impl fmt::Display for ExtendedRegisterType {
 
 /// Where the extended register state is stored.
 #[derive(PartialEq, Eq, Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub enum ExtendedRegisterStateLocation {
     Xcr0,
     Ia32Xss,
@@ -4468,7 +4465,6 @@ impl fmt::Display for ExtendedRegisterStateLocation {
 }
 
 /// ExtendedState subleaf structure for things that need to be restored.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct ExtendedState {
     pub subleaf: u32,
     eax: u32,
@@ -4546,15 +4542,13 @@ impl Debug for ExtendedState {
 /// Monitoring Enumeration Sub-leaf (EAX = 0FH, ECX = 0 and ECX = 1)
 /// # Platforms
 /// ❌ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct RdtMonitoringInfo {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct RdtMonitoringInfo<R: CpuIdReader> {
+    read: R,
     ebx: u32,
     edx: u32,
 }
 
-impl RdtMonitoringInfo {
+impl<R: CpuIdReader> RdtMonitoringInfo<R> {
     /// Maximum range (zero-based) of RMID within this physical processor of all types.
     pub fn rmid_range(&self) -> u32 {
         self.ebx
@@ -4582,7 +4576,7 @@ impl RdtMonitoringInfo {
     }
 }
 
-impl Debug for RdtMonitoringInfo {
+impl<R: CpuIdReader> Debug for RdtMonitoringInfo<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RdtMonitoringInfo")
             .field("rmid_range", &self.rmid_range())
@@ -4592,7 +4586,6 @@ impl Debug for RdtMonitoringInfo {
 }
 
 /// Information about L3 cache monitoring.
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct L3MonitoringInfo {
     ebx: u32,
     ecx: u32,
@@ -4645,14 +4638,12 @@ impl Debug for L3MonitoringInfo {
 ///
 /// # Platforms
 /// ❌ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct RdtAllocationInfo {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct RdtAllocationInfo<R: CpuIdReader> {
+    read: R,
     ebx: u32,
 }
 
-impl RdtAllocationInfo {
+impl<R: CpuIdReader> RdtAllocationInfo<R> {
     check_bit_fn!(doc = "Supports L3 Cache Allocation.", has_l3_cat, ebx, 1);
 
     check_bit_fn!(doc = "Supports L2 Cache Allocation.", has_l2_cat, ebx, 2);
@@ -4708,7 +4699,7 @@ impl RdtAllocationInfo {
     }
 }
 
-impl Debug for RdtAllocationInfo {
+impl<R: CpuIdReader> Debug for RdtAllocationInfo<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RdtAllocationInfo")
             .field("l3_cat", &self.l3_cat())
@@ -4722,7 +4713,6 @@ impl Debug for RdtAllocationInfo {
 }
 
 /// L3 Cache Allocation Technology Enumeration Sub-leaf (LEAF=0x10, SUBLEAF=1).
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct L3CatInfo {
     eax: u32,
     ebx: u32,
@@ -4766,7 +4756,6 @@ impl Debug for L3CatInfo {
 
 /// L2 Cache Allocation Technology Enumeration Sub-leaf (LEAF=0x10, SUBLEAF=2).
 #[derive(Eq, PartialEq)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct L2CatInfo {
     eax: u32,
     ebx: u32,
@@ -4802,7 +4791,6 @@ impl Debug for L2CatInfo {
 
 /// Memory Bandwidth Allocation Enumeration Sub-leaf (LEAF=0x10, SUBLEAF=3).
 #[derive(Eq, PartialEq)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct MemBwAllocationInfo {
     eax: u32,
     ecx: u32,
@@ -4847,10 +4835,8 @@ impl Debug for MemBwAllocationInfo {
 ///
 /// # Platforms
 /// ❌ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct SgxInfo {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct SgxInfo<R: CpuIdReader> {
+    read: R,
     eax: u32,
     ebx: u32,
     _ecx: u32,
@@ -4861,7 +4847,7 @@ pub struct SgxInfo {
     edx1: u32,
 }
 
-impl SgxInfo {
+impl<F: CpuIdReader> SgxInfo<F> {
     check_bit_fn!(doc = "Has SGX1 support.", has_sgx1, eax, 0);
     check_bit_fn!(doc = "Has SGX2 support.", has_sgx2, eax, 1);
 
@@ -4901,15 +4887,15 @@ impl SgxInfo {
         (lower, upper)
     }
     /// Iterator over SGX sub-leafs.
-    pub fn iter(&self) -> SgxSectionIter {
+    pub fn iter(&self) -> SgxSectionIter<F> {
         SgxSectionIter {
-            read: self.read,
+            read: self.read.clone(),
             current: 2,
         }
     }
 }
 
-impl Debug for SgxInfo {
+impl<R: CpuIdReader> Debug for SgxInfo<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SgxInfo")
             .field("has_sgx1", &self.has_sgx1())
@@ -4935,14 +4921,12 @@ impl Debug for SgxInfo {
 
 /// Iterator over the SGX sub-leafs (ECX >= 2).
 #[derive(Clone)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct SgxSectionIter {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct SgxSectionIter<R: CpuIdReader> {
+    read: R,
     current: u32,
 }
 
-impl Iterator for SgxSectionIter {
+impl<R: CpuIdReader> Iterator for SgxSectionIter<R> {
     type Item = SgxSectionInfo;
 
     fn next(&mut self) -> Option<SgxSectionInfo> {
@@ -4960,7 +4944,7 @@ impl Iterator for SgxSectionIter {
     }
 }
 
-impl Debug for SgxSectionIter {
+impl<R: CpuIdReader> Debug for SgxSectionIter<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         let mut debug = f.debug_list();
         self.clone().for_each(|ref item| {
@@ -4974,7 +4958,6 @@ impl Debug for SgxSectionIter {
 ///
 /// Sub-leaves 2 or higher.
 #[derive(Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub enum SgxSectionInfo {
     // This would be nice: https://github.com/rust-lang/rfcs/pull/1450
     Epc(EpcSection),
@@ -4982,7 +4965,6 @@ pub enum SgxSectionInfo {
 
 /// EBX:EAX and EDX:ECX provide information on the Enclave Page Cache (EPC) section
 #[derive(Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct EpcSection {
     eax: u32,
     ebx: u32,
@@ -5010,7 +4992,6 @@ impl EpcSection {
 ///
 /// # Platforms
 /// ❌ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct ProcessorTraceInfo {
     _eax: u32,
     ebx: u32,
@@ -5150,7 +5131,6 @@ impl Debug for ProcessorTraceInfo {
 ///
 /// # Platforms
 /// ❌ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct TscInfo {
     eax: u32,
     ebx: u32,
@@ -5204,7 +5184,6 @@ impl TscInfo {
 ///
 /// # Platforms
 /// ❌ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct ProcessorFrequencyInfo {
     eax: u32,
     ebx: u32,
@@ -5243,15 +5222,13 @@ impl fmt::Debug for ProcessorFrequencyInfo {
 /// # Platforms
 /// ❌ AMD ✅ Intel
 #[derive(Clone)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct DatIter {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct DatIter<R: CpuIdReader> {
+    read: R,
     current: u32,
     count: u32,
 }
 
-impl Iterator for DatIter {
+impl<R: CpuIdReader> Iterator for DatIter<R> {
     type Item = DatInfo;
 
     /// Iterate over each sub-leaf with an address translation structure.
@@ -5285,7 +5262,7 @@ impl Iterator for DatIter {
     }
 }
 
-impl Debug for DatIter {
+impl<R: CpuIdReader> Debug for DatIter<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut debug = f.debug_list();
         self.clone().for_each(|ref item| {
@@ -5296,7 +5273,6 @@ impl Debug for DatIter {
 }
 
 /// Deterministic Address Translation Structure
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub struct DatInfo {
     _eax: u32,
     ebx: u32,
@@ -5394,7 +5370,6 @@ impl Debug for DatInfo {
 
 /// Deterministic Address Translation cache type (EDX bits 04 -- 00)
 #[derive(Eq, PartialEq, Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 pub enum DatType {
     /// Null (indicates this sub-leaf is not valid).
     Null = 0b00000,
@@ -5430,10 +5405,8 @@ impl fmt::Display for DatType {
 ///
 /// # Platforms
 /// ❌ AMD ✅ Intel
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct SoCVendorInfo {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct SoCVendorInfo<R: CpuIdReader> {
+    read: R,
     /// MaxSOCID_Index
     eax: u32,
     ebx: u32,
@@ -5441,7 +5414,7 @@ pub struct SoCVendorInfo {
     edx: u32,
 }
 
-impl SoCVendorInfo {
+impl<R: CpuIdReader> SoCVendorInfo<R> {
     pub fn get_soc_vendor_id(&self) -> u16 {
         get_bits(self.ebx, 0, 15) as u16
     }
@@ -5466,10 +5439,10 @@ impl SoCVendorInfo {
         }
     }
 
-    pub fn get_vendor_attributes(&self) -> Option<SoCVendorAttributesIter> {
+    pub fn get_vendor_attributes(&self) -> Option<SoCVendorAttributesIter<R>> {
         if self.eax > 3 {
             Some(SoCVendorAttributesIter {
-                read: self.read,
+                read: self.read.clone(),
                 count: self.eax,
                 current: 3,
             })
@@ -5479,7 +5452,7 @@ impl SoCVendorInfo {
     }
 }
 
-impl fmt::Debug for SoCVendorInfo {
+impl<R: CpuIdReader> fmt::Debug for SoCVendorInfo<R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("SoCVendorInfo")
             .field("soc_vendor_id", &self.get_soc_vendor_id())
@@ -5492,16 +5465,22 @@ impl fmt::Debug for SoCVendorInfo {
 }
 
 /// Iterator for SoC vendor attributes.
-#[derive(Debug)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct SoCVendorAttributesIter {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct SoCVendorAttributesIter<R: CpuIdReader> {
+    read: R,
     count: u32,
     current: u32,
 }
 
-impl Iterator for SoCVendorAttributesIter {
+impl<R: CpuIdReader> fmt::Debug for SoCVendorAttributesIter<R> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("SocVendorAttributesIter")
+            .field("count", &self.count)
+            .field("current", &self.current)
+            .finish()
+    }
+}
+
+impl<R: CpuIdReader> Iterator for SoCVendorAttributesIter<R> {
     type Item = CpuIdResult;
 
     /// Iterate over all SoC vendor specific attributes.
@@ -5516,7 +5495,6 @@ impl Iterator for SoCVendorAttributesIter {
 
 /// A vendor brand string as queried from the cpuid leaf.
 #[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
 #[repr(C)]
 pub struct SoCVendorBrand {
     data: [CpuIdResult; 3],
@@ -5552,14 +5530,12 @@ impl fmt::Display for SoCVendorBrand {
 ///
 /// More information about this semi-official leaf can be found here
 /// <https://lwn.net/Articles/301888/>
-#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
-pub struct HypervisorInfo {
-    #[cfg_attr(feature = "serialize", serde(skip))]
-    read: CpuIdReader,
+pub struct HypervisorInfo<R: CpuIdReader> {
+    read: R,
     res: CpuIdResult,
 }
 
-impl fmt::Debug for HypervisorInfo {
+impl<R: CpuIdReader> fmt::Debug for HypervisorInfo<R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("HypervisorInfo")
             .field("identify", &self.identify())
@@ -5585,7 +5561,7 @@ pub enum Hypervisor {
     Unknown(u32, u32, u32),
 }
 
-impl HypervisorInfo {
+impl<R: CpuIdReader> HypervisorInfo<R> {
     /// Returns the identity of the [`Hypervisor`].
     ///
     /// ## Technical Background

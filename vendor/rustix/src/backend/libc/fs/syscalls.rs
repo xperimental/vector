@@ -13,6 +13,8 @@ use crate::fd::{BorrowedFd, OwnedFd};
 use crate::ffi::CStr;
 #[cfg(apple)]
 use crate::ffi::CString;
+#[cfg(not(any(target_os = "espidf", target_os = "vita")))]
+use crate::fs::Access;
 #[cfg(not(any(
     apple,
     netbsdlike,
@@ -21,6 +23,7 @@ use crate::ffi::CString;
     target_os = "espidf",
     target_os = "haiku",
     target_os = "redox",
+    target_os = "vita",
 )))]
 use crate::fs::Advice;
 #[cfg(not(any(target_os = "espidf", target_os = "redox")))]
@@ -33,9 +36,10 @@ use crate::fs::AtFlags;
     target_os = "espidf",
     target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
 )))]
 use crate::fs::FallocateFlags;
-#[cfg(not(any(target_os = "espidf", target_os = "wasi")))]
+#[cfg(not(any(target_os = "espidf", target_os = "vita", target_os = "wasi")))]
 use crate::fs::FlockOperation;
 #[cfg(any(linux_kernel, target_os = "freebsd"))]
 use crate::fs::MemfdFlags;
@@ -48,12 +52,19 @@ use crate::fs::SealFlags;
     target_os = "netbsd",
     target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
 use crate::fs::StatFs;
-#[cfg(not(target_os = "espidf"))]
-use crate::fs::{Access, Timestamps};
-#[cfg(not(any(apple, target_os = "espidf", target_os = "redox", target_os = "wasi")))]
+#[cfg(not(any(target_os = "espidf", target_os = "vita")))]
+use crate::fs::Timestamps;
+#[cfg(not(any(
+    apple,
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 use crate::fs::{Dev, FileType};
 use crate::fs::{Mode, OFlags, SeekFrom, Stat};
 #[cfg(not(any(target_os = "haiku", target_os = "redox", target_os = "wasi")))]
@@ -232,6 +243,7 @@ pub(crate) fn openat(
     target_os = "netbsd",
     target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
 #[inline]
@@ -509,8 +521,6 @@ pub(crate) fn renameat2(
     }
 }
 
-/// At present, `libc` only has `renameat2` defined for glibc. On other
-/// ABIs, `RenameFlags` has no flags defined, and we use plain `renameat`.
 #[cfg(any(
     target_os = "android",
     all(target_os = "linux", not(target_env = "gnu")),
@@ -523,8 +533,32 @@ pub(crate) fn renameat2(
     new_path: &CStr,
     flags: RenameFlags,
 ) -> io::Result<()> {
-    assert!(flags.is_empty());
-    renameat(old_dirfd, old_path, new_dirfd, new_path)
+    // At present, `libc` only has `renameat2` defined for glibc. If we have
+    // no flags, we can use plain `renameat`, but otherwise we use `syscall!`.
+    // to call `renameat2` ourselves.
+    if flags.is_empty() {
+        renameat(old_dirfd, old_path, new_dirfd, new_path)
+    } else {
+        syscall! {
+            fn renameat2(
+                olddirfd: c::c_int,
+                oldpath: *const c::c_char,
+                newdirfd: c::c_int,
+                newpath: *const c::c_char,
+                flags: c::c_uint
+            ) via SYS_renameat2 -> c::c_int
+        }
+
+        unsafe {
+            ret(renameat2(
+                borrowed_fd(old_dirfd),
+                c_str(old_path),
+                borrowed_fd(new_dirfd),
+                c_str(new_path),
+                flags.bits(),
+            ))
+        }
+    }
 }
 
 pub(crate) fn symlink(old_path: &CStr, new_path: &CStr) -> io::Result<()> {
@@ -688,12 +722,17 @@ fn statat_old(dirfd: BorrowedFd<'_>, path: &CStr, flags: AtFlags) -> io::Result<
     }
 }
 
-#[cfg(not(any(target_os = "espidf", target_os = "emscripten")))]
+#[cfg(not(any(target_os = "espidf", target_os = "emscripten", target_os = "vita")))]
 pub(crate) fn access(path: &CStr, access: Access) -> io::Result<()> {
     unsafe { ret(c::access(c_str(path), access.bits())) }
 }
 
-#[cfg(not(any(target_os = "emscripten", target_os = "espidf", target_os = "redox")))]
+#[cfg(not(any(
+    target_os = "emscripten",
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita"
+)))]
 pub(crate) fn accessat(
     dirfd: BorrowedFd<'_>,
     path: &CStr,
@@ -759,7 +798,7 @@ pub(crate) fn accessat(
     Ok(())
 }
 
-#[cfg(not(any(target_os = "espidf", target_os = "redox")))]
+#[cfg(not(any(target_os = "espidf", target_os = "redox", target_os = "vita")))]
 pub(crate) fn utimensat(
     dirfd: BorrowedFd<'_>,
     path: &CStr,
@@ -1070,7 +1109,13 @@ pub(crate) fn chownat(
     }
 }
 
-#[cfg(not(any(apple, target_os = "espidf", target_os = "redox", target_os = "wasi")))]
+#[cfg(not(any(
+    apple,
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 pub(crate) fn mknodat(
     dirfd: BorrowedFd<'_>,
     path: &CStr,
@@ -1149,6 +1194,7 @@ pub(crate) fn copy_file_range(
     target_os = "espidf",
     target_os = "haiku",
     target_os = "redox",
+    target_os = "vita",
 )))]
 pub(crate) fn fadvise(fd: BorrowedFd<'_>, offset: u64, len: u64, advice: Advice) -> io::Result<()> {
     let offset = offset as i64;
@@ -1205,6 +1251,7 @@ pub(crate) fn fcntl_add_seals(fd: BorrowedFd<'_>, seals: SealFlags) -> io::Resul
     target_os = "espidf",
     target_os = "fuchsia",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi"
 )))]
 #[inline]
@@ -1250,8 +1297,8 @@ pub(crate) fn seek(fd: BorrowedFd<'_>, pos: SeekFrom) -> io::Result<u64> {
         SeekFrom::Hole(offset) => (c::SEEK_HOLE, offset),
     };
 
-    // ESP-IDF doesn't support 64-bit offsets.
-    #[cfg(target_os = "espidf")]
+    // ESP-IDF and Vita don't support 64-bit offsets.
+    #[cfg(any(target_os = "espidf", target_os = "vita"))]
     let offset: i32 = offset.try_into().map_err(|_| io::Errno::OVERFLOW)?;
 
     let offset = unsafe { ret_off_t(c::lseek(borrowed_fd(fd), offset, whence))? };
@@ -1318,7 +1365,12 @@ pub(crate) fn fchown(fd: BorrowedFd<'_>, owner: Option<Uid>, group: Option<Gid>)
     }
 }
 
-#[cfg(not(any(target_os = "espidf", target_os = "solaris", target_os = "wasi")))]
+#[cfg(not(any(
+    target_os = "espidf",
+    target_os = "solaris",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 pub(crate) fn flock(fd: BorrowedFd<'_>, operation: FlockOperation) -> io::Result<()> {
     unsafe { ret(c::flock(borrowed_fd(fd), operation as c::c_int)) }
 }
@@ -1340,7 +1392,12 @@ pub(crate) fn syncfs(fd: BorrowedFd<'_>) -> io::Result<()> {
     unsafe { ret(syncfs(borrowed_fd(fd))) }
 }
 
-#[cfg(not(any(target_os = "espidf", target_os = "redox", target_os = "wasi")))]
+#[cfg(not(any(
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 pub(crate) fn sync() {
     unsafe { c::sync() }
 }
@@ -1408,6 +1465,7 @@ fn fstat_old(fd: BorrowedFd<'_>) -> io::Result<Stat> {
     target_os = "netbsd",
     target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
 pub(crate) fn fstatfs(fd: BorrowedFd<'_>) -> io::Result<StatFs> {
@@ -1447,7 +1505,7 @@ fn libc_statvfs_to_statvfs(from: c::statvfs) -> StatVfs {
     }
 }
 
-#[cfg(not(target_os = "espidf"))]
+#[cfg(not(any(target_os = "espidf", target_os = "vita")))]
 pub(crate) fn futimens(fd: BorrowedFd<'_>, times: &Timestamps) -> io::Result<()> {
     // Old 32-bit version: libc has `futimens` but it is not y2038 safe by
     // default. But there may be a `__futimens64` we can use.
@@ -1555,6 +1613,7 @@ fn futimens_old(fd: BorrowedFd<'_>, times: &Timestamps) -> io::Result<()> {
     target_os = "espidf",
     target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
 )))]
 pub(crate) fn fallocate(
     fd: BorrowedFd<'_>,
@@ -1632,6 +1691,7 @@ pub(crate) fn fsync(fd: BorrowedFd<'_>) -> io::Result<()> {
     target_os = "espidf",
     target_os = "haiku",
     target_os = "redox",
+    target_os = "vita",
 )))]
 pub(crate) fn fdatasync(fd: BorrowedFd<'_>) -> io::Result<()> {
     unsafe { ret(c::fdatasync(borrowed_fd(fd))) }

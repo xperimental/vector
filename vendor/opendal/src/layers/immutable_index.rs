@@ -140,7 +140,6 @@ impl<A: Accessor> LayeredAccessor for ImmutableIndexAccessor<A> {
     type BlockingReader = A::BlockingReader;
     type Writer = A::Writer;
     type BlockingWriter = A::BlockingWriter;
-    type Appender = A::Appender;
     type Pager = ImmutableDir;
     type BlockingPager = ImmutableDir;
 
@@ -152,7 +151,7 @@ impl<A: Accessor> LayeredAccessor for ImmutableIndexAccessor<A> {
     fn metadata(&self) -> AccessorInfo {
         let mut meta = self.inner.info();
 
-        let cap = meta.capability_mut();
+        let cap = meta.full_capability_mut();
         cap.list = true;
         cap.list_with_delimiter_slash = true;
         cap.list_without_delimiter = true;
@@ -194,10 +193,6 @@ impl<A: Accessor> LayeredAccessor for ImmutableIndexAccessor<A> {
 
     fn blocking_write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::BlockingWriter)> {
         self.inner.blocking_write(path, args)
-    }
-
-    async fn append(&self, path: &str, args: OpAppend) -> Result<(RpAppend, Self::Appender)> {
-        self.inner.append(path, args).await
     }
 
     fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
@@ -302,7 +297,7 @@ mod tests {
 
         let mut map = HashMap::new();
         let mut set = HashSet::new();
-        let mut ds = op.list("").await?;
+        let mut ds = op.lister("").await?;
         while let Some(entry) = ds.try_next().await? {
             debug!("got entry: {}", entry.path());
             assert!(
@@ -310,10 +305,7 @@ mod tests {
                 "duplicated value: {}",
                 entry.path()
             );
-            map.insert(
-                entry.path().to_string(),
-                op.metadata(&entry, Metakey::Mode).await?.mode(),
-            );
+            map.insert(entry.path().to_string(), entry.metadata().mode());
         }
 
         assert_eq!(map["file"], EntryMode::FILE);
@@ -341,7 +333,7 @@ mod tests {
         .layer(iil)
         .finish();
 
-        let mut ds = op.scan("/").await?;
+        let mut ds = op.lister_with("/").delimiter("").await?;
         let mut set = HashSet::new();
         let mut map = HashMap::new();
         while let Some(entry) = ds.try_next().await? {
@@ -351,10 +343,7 @@ mod tests {
                 "duplicated value: {}",
                 entry.path()
             );
-            map.insert(
-                entry.path().to_string(),
-                op.metadata(&entry, Metakey::Mode).await?.mode(),
-            );
+            map.insert(entry.path().to_string(), entry.metadata().mode());
         }
 
         debug!("current files: {:?}", map);
@@ -391,17 +380,14 @@ mod tests {
         //  List /
         let mut map = HashMap::new();
         let mut set = HashSet::new();
-        let mut ds = op.list("/").await?;
+        let mut ds = op.lister("/").await?;
         while let Some(entry) = ds.try_next().await? {
             assert!(
                 set.insert(entry.path().to_string()),
                 "duplicated value: {}",
                 entry.path()
             );
-            map.insert(
-                entry.path().to_string(),
-                op.metadata(&entry, Metakey::Mode).await?.mode(),
-            );
+            map.insert(entry.path().to_string(), entry.metadata().mode());
         }
 
         assert_eq!(map.len(), 1);
@@ -410,17 +396,14 @@ mod tests {
         //  List dataset/stateful/
         let mut map = HashMap::new();
         let mut set = HashSet::new();
-        let mut ds = op.list("dataset/stateful/").await?;
+        let mut ds = op.lister("dataset/stateful/").await?;
         while let Some(entry) = ds.try_next().await? {
             assert!(
                 set.insert(entry.path().to_string()),
                 "duplicated value: {}",
                 entry.path()
             );
-            map.insert(
-                entry.path().to_string(),
-                op.metadata(&entry, Metakey::Mode).await?.mode(),
-            );
+            map.insert(entry.path().to_string(), entry.metadata().mode());
         }
 
         assert_eq!(map["dataset/stateful/ontime_2007_200.csv"], EntryMode::FILE);
@@ -452,7 +435,7 @@ mod tests {
         .layer(iil)
         .finish();
 
-        let mut ds = op.scan("/").await?;
+        let mut ds = op.lister_with("/").delimiter("").await?;
 
         let mut map = HashMap::new();
         let mut set = HashSet::new();
@@ -462,10 +445,7 @@ mod tests {
                 "duplicated value: {}",
                 entry.path()
             );
-            map.insert(
-                entry.path().to_string(),
-                op.metadata(&entry, Metakey::Mode).await?.mode(),
-            );
+            map.insert(entry.path().to_string(), entry.metadata().mode());
         }
 
         debug!("current files: {:?}", map);

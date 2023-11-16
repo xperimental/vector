@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "async-graphql"
-version = "6.0.7"
+version = "6.0.9"
 authors = [
     "sunli <scott_s829@163.com>",
     "Koxiaet",
@@ -45,13 +45,13 @@ name = "static_schema"
 harness = false
 
 [dependencies.async-graphql-derive]
-version = "6.0.7"
+version = "6.0.9"
 
 [dependencies.async-graphql-parser]
-version = "6.0.7"
+version = "6.0.9"
 
 [dependencies.async-graphql-value]
-version = "6.0.7"
+version = "6.0.9"
 
 [dependencies.async-stream]
 version = "0.3.0"

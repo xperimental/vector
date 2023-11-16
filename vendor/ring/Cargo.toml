@@ -13,10 +13,10 @@
 edition = "2021"
 rust-version = "1.61.0"
 name = "ring"
-version = "0.17.4"
+version = "0.17.5"
 authors = ["Brian Smith <brian@briansmith.org>"]
 build = "build.rs"
-links = "ring_core_0_17_4"
+links = "ring_core_0_17_5"
 include = [
     "LICENSE",
     "Cargo.toml",

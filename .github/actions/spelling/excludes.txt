@@ -3,6 +3,9 @@
 (?:^|/)(?i)LICEN[CS]E
 (?:^|/)3rdparty/
 (?:^|/)amplify\.yml$
+(?:^|/)build_preview_sites\.yml$
+(?:^|/)create_preview_sites\.yml$
+(?:^|/)preview_site_trigger\.yml$
 (?:^|/)go\.sum$
 (?:^|/)package(?:-lock|)\.json$
 (?:^|/)Pipfile$
@@ -70,6 +73,7 @@
 \.zst$
 ^\.github/actions/spelling/
 ^\Q.cargo/config.toml\E$
+^\Q.github/dependabot.yml\E$
 ^\Q.github/workflows/gardener_issue_comment.yml\E$
 ^\Q.github/workflows/spelling.yml\E$
 ^\Qbenches/codecs/moby_dick.txt\E$

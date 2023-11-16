@@ -178,7 +178,8 @@ fn udp_connect() -> io::Result<()> {
     })
 }
 
-#[cfg(unix)]
+// This test is broken for now on OpenBSD: https://github.com/rust-lang/rust/issues/116523
+#[cfg(all(unix, not(target_os = "openbsd")))]
 #[test]
 fn uds_connect() -> io::Result<()> {
     future::block_on(async {
@@ -351,6 +352,33 @@ fn shutdown() -> io::Result<()> {
             writer.get_ref().shutdown(Shutdown::Write)
         })
         .await?;
+
+        Ok(())
+    })
+}
+
+// prevent source from unregistering by trying to register it twice
+#[test]
+fn duplicate_socket_insert() -> io::Result<()> {
+    future::block_on(async {
+        let listener = Async::<TcpListener>::bind(([127, 0, 0, 1], 0))?;
+        let addr = listener.as_ref().local_addr()?;
+
+        // attempt to register twice
+        assert!(Async::new(&listener).is_err(), "fails upon second insert");
+
+        // Read and Write to confirm socket did not deregister on duplication attempt
+        // Write to stream_w
+        let mut stream_w = Async::<TcpStream>::connect(addr).await?;
+        stream_w.write(LOREM_IPSUM).await?;
+        stream_w.get_ref().shutdown(Shutdown::Write)?;
+
+        // Read from stream_r
+        let mut stream_r = listener.accept().await?.0;
+        let mut buffer = vec![0; LOREM_IPSUM.len()];
+        stream_r.read_exact(&mut buffer).await?;
+
+        assert_eq!(buffer, LOREM_IPSUM);
 
         Ok(())
     })

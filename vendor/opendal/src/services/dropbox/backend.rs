@@ -49,20 +49,20 @@ pub struct DropboxBackend {
 impl Accessor for DropboxBackend {
     type Reader = IncomingAsyncBody;
     type BlockingReader = ();
-    type Writer = DropboxWriter;
+    type Writer = oio::OneShotWriter<DropboxWriter>;
     type BlockingWriter = ();
     type Pager = ();
     type BlockingPager = ();
-    type Appender = ();
 
     fn info(&self) -> AccessorInfo {
         let mut ma = AccessorInfo::default();
         ma.set_scheme(Scheme::Dropbox)
             .set_root(&self.core.root)
-            .set_capability(Capability {
+            .set_native_capability(Capability {
                 stat: true,
 
                 read: true,
+                read_with_range: true,
 
                 write: true,
 
@@ -93,11 +93,11 @@ impl Accessor for DropboxBackend {
         }
     }
 
-    async fn read(&self, path: &str, _args: OpRead) -> Result<(RpRead, Self::Reader)> {
-        let resp = self.core.dropbox_get(path).await?;
+    async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
+        let resp = self.core.dropbox_get(path, args).await?;
         let status = resp.status();
         match status {
-            StatusCode::OK => {
+            StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
                 let meta = parse_into_metadata(path, resp.headers())?;
                 Ok((RpRead::with_metadata(meta), resp.into_body()))
             }
@@ -106,15 +106,13 @@ impl Accessor for DropboxBackend {
     }
 
     async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        if args.content_length().is_none() {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                "write without content length is not supported",
-            ));
-        }
         Ok((
             RpWrite::default(),
-            DropboxWriter::new(self.core.clone(), args, String::from(path)),
+            oio::OneShotWriter::new(DropboxWriter::new(
+                self.core.clone(),
+                args,
+                String::from(path),
+            )),
         ))
     }
 

@@ -12,7 +12,7 @@
 [package]
 edition = "2018"
 name = "serde-wasm-bindgen"
-version = "0.6.0"
+version = "0.6.1"
 authors = ["Ingvar Stepanyan <me@rreverser.com>"]
 description = "Native Serde adapter for wasm-bindgen"
 readme = "README.md"
@@ -34,7 +34,7 @@ repository = "https://github.com/cloudflare/serde-wasm-bindgen"
 [profile.release]
 lto = true
 codegen-units = 1
-debug = true
+debug = 2
 
 [dependencies.js-sys]
 version = "^0.3"

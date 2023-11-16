@@ -17,7 +17,7 @@ bitflags! {
         /// `PROT_EXEC`
         const EXEC = bitcast!(c::PROT_EXEC);
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -59,7 +59,7 @@ bitflags! {
         #[cfg(all(linux_kernel, any(target_arch = "sparc", target_arch = "sparc64")))]
         const ADI = linux_raw_sys::general::PROT_ADI;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -231,7 +231,7 @@ bitflags! {
         #[cfg(any())]
         const UNINITIALIZED = bitcast!(c::MAP_UNINITIALIZED);
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -250,7 +250,7 @@ bitflags! {
         /// `MREMAP_MAYMOVE`
         const MAYMOVE = bitcast!(c::MREMAP_MAYMOVE);
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -272,7 +272,7 @@ bitflags! {
         /// written).
         const INVALIDATE = bitcast!(c::MS_INVALIDATE);
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -288,7 +288,7 @@ bitflags! {
         /// `MLOCK_ONFAULT`
         const ONFAULT = bitcast!(c::MLOCK_ONFAULT);
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -438,7 +438,7 @@ bitflags! {
         /// `O_NONBLOCK`
         const NONBLOCK = bitcast!(c::O_NONBLOCK);
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -453,17 +453,16 @@ bitflags! {
     pub struct MlockAllFlags: u32 {
         // libc doesn't define `MCL_ONFAULT` yet.
         // const ONFAULT = libc::MCL_ONFAULT;
-        /// Lock all pages which will become mapped into the address
-        /// space of the process in the future.  These could be, for
-        /// instance, new pages required by a growing heap and stack
-        /// as well as new memory-mapped files or shared memory
-        /// regions.
+        /// Lock all pages which will become mapped into the address space of
+        /// the process in the future. These could be, for instance, new pages
+        /// required by a growing heap and stack as well as new memory-mapped
+        /// files or shared memory regions.
         const FUTURE = bitcast!(libc::MCL_FUTURE);
-        /// Lock all pages which are currently mapped into the address
-        /// space of the process.
+        /// Lock all pages which are currently mapped into the address space of
+        /// the process.
         const CURRENT = bitcast!(libc::MCL_CURRENT);
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }

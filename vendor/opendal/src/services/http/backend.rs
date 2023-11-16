@@ -32,56 +32,8 @@ use super::error::parse_error;
 use crate::raw::*;
 use crate::*;
 
-/// HTTP Read-only service support like Nginx and Caddy.
-///
-/// # Capabilities
-///
-/// This service can be used to:
-///
-/// - [x] stat
-/// - [x] read
-/// - [ ] ~~write~~
-/// - [ ] ~~create_dir~~
-/// - [ ] ~~delete~~
-/// - [ ] ~~copy~~
-/// - [ ] ~~rename~~
-/// - [ ] ~~list~~
-/// - [ ] ~~scan~~
-/// - [ ] ~~presign~~
-/// - [ ] blocking
-///
-/// # Notes
-///
-/// Only `read` ans `stat` are supported. We can use this service to visit any
-/// HTTP Server like nginx, caddy.
-///
-/// # Configuration
-///
-/// - `endpoint`: set the endpoint for http
-/// - `root`: Set the work directory for backend
-///
-/// You can refer to [`HttpBuilder`]'s docs for more information
-///
-/// # Example
-///
-/// ## Via Builder
-///
-/// ```no_run
-/// use anyhow::Result;
-/// use opendal::services::Http;
-/// use opendal::Operator;
-///
-/// #[tokio::main]
-/// async fn main() -> Result<()> {
-///     // create backend builder
-///     let mut builder = Http::default();
-///
-///     builder.endpoint("127.0.0.1");
-///
-///     let op: Operator = Operator::new(builder)?.finish();
-///     Ok(())
-/// }
-/// ```
+/// HTTP Read-only service support like [Nginx](https://www.nginx.com/) and [Caddy](https://caddyserver.com/).
+#[doc = include_str!("docs.md")]
 #[derive(Default)]
 pub struct HttpBuilder {
     endpoint: Option<String>,
@@ -255,7 +207,6 @@ impl Accessor for HttpBackend {
     type BlockingReader = ();
     type Writer = ();
     type BlockingWriter = ();
-    type Appender = ();
     type Pager = ();
     type BlockingPager = ();
 
@@ -263,7 +214,7 @@ impl Accessor for HttpBackend {
         let mut ma = AccessorInfo::default();
         ma.set_scheme(Scheme::Http)
             .set_root(&self.root)
-            .set_capability(Capability {
+            .set_native_capability(Capability {
                 stat: true,
                 stat_with_if_match: true,
                 stat_with_if_none_match: true,
@@ -281,9 +232,7 @@ impl Accessor for HttpBackend {
     }
 
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
-        let resp = self
-            .http_get(path, args.range(), args.if_match(), args.if_none_match())
-            .await?;
+        let resp = self.http_get(path, &args).await?;
 
         let status = resp.status();
 
@@ -302,9 +251,7 @@ impl Accessor for HttpBackend {
             return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
         }
 
-        let resp = self
-            .http_head(path, args.if_match(), args.if_none_match())
-            .await?;
+        let resp = self.http_head(path, &args).await?;
 
         let status = resp.status();
 
@@ -321,24 +268,18 @@ impl Accessor for HttpBackend {
 }
 
 impl HttpBackend {
-    async fn http_get(
-        &self,
-        path: &str,
-        range: BytesRange,
-        if_match: Option<&str>,
-        if_none_match: Option<&str>,
-    ) -> Result<Response<IncomingAsyncBody>> {
+    async fn http_get(&self, path: &str, args: &OpRead) -> Result<Response<IncomingAsyncBody>> {
         let p = build_rooted_abs_path(&self.root, path);
 
         let url = format!("{}{}", self.endpoint, percent_encode_path(&p));
 
         let mut req = Request::get(&url);
 
-        if let Some(if_match) = if_match {
+        if let Some(if_match) = args.if_match() {
             req = req.header(IF_MATCH, if_match);
         }
 
-        if let Some(if_none_match) = if_none_match {
+        if let Some(if_none_match) = args.if_none_match() {
             req = req.header(IF_NONE_MATCH, if_none_match);
         }
 
@@ -346,8 +287,8 @@ impl HttpBackend {
             req = req.header(header::AUTHORIZATION, auth.clone())
         }
 
-        if !range.is_full() {
-            req = req.header(header::RANGE, range.to_header());
+        if !args.range().is_full() {
+            req = req.header(header::RANGE, args.range().to_header());
         }
 
         let req = req
@@ -357,23 +298,18 @@ impl HttpBackend {
         self.client.send(req).await
     }
 
-    async fn http_head(
-        &self,
-        path: &str,
-        if_match: Option<&str>,
-        if_none_match: Option<&str>,
-    ) -> Result<Response<IncomingAsyncBody>> {
+    async fn http_head(&self, path: &str, args: &OpStat) -> Result<Response<IncomingAsyncBody>> {
         let p = build_rooted_abs_path(&self.root, path);
 
         let url = format!("{}{}", self.endpoint, percent_encode_path(&p));
 
         let mut req = Request::head(&url);
 
-        if let Some(if_match) = if_match {
+        if let Some(if_match) = args.if_match() {
             req = req.header(IF_MATCH, if_match);
         }
 
-        if let Some(if_none_match) = if_none_match {
+        if let Some(if_none_match) = args.if_none_match() {
             req = req.header(IF_NONE_MATCH, if_none_match);
         }
 

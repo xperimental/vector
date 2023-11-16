@@ -12,7 +12,7 @@
 [package]
 edition = "2018"
 name = "cached"
-version = "0.45.1"
+version = "0.46.1"
 authors = ["James Kominick <james@kominick.com>"]
 description = "Generic cache implementations and simplified function memoization"
 documentation = "https://docs.rs/cached"
@@ -66,12 +66,17 @@ required-features = [
     "proc_macro",
 ]
 
+[dependencies.ahash]
+version = "0.8"
+optional = true
+default-features = false
+
 [dependencies.async-trait]
 version = "0.1"
 optional = true
 
 [dependencies.cached_proc_macro]
-version = "0.18.0"
+version = "0.18.1"
 optional = true
 
 [dependencies.cached_proc_macro_types]
@@ -84,7 +89,7 @@ optional = true
 default-features = false
 
 [dependencies.hashbrown]
-version = "0.13"
+version = "0.14"
 features = [
     "raw",
     "inline-more",
@@ -139,6 +144,10 @@ version = "2"
 version = "1"
 
 [features]
+ahash = [
+    "dep:ahash",
+    "hashbrown/default",
+]
 async = [
     "futures",
     "tokio",
@@ -148,7 +157,10 @@ async_tokio_rt_multi_thread = [
     "async",
     "tokio/rt-multi-thread",
 ]
-default = ["proc_macro"]
+default = [
+    "proc_macro",
+    "ahash",
+]
 proc_macro = [
     "cached_proc_macro",
     "cached_proc_macro_types",

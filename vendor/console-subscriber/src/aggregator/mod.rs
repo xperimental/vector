@@ -7,7 +7,6 @@ use console_api as proto;
 use proto::resources::resource;
 use tokio::sync::{mpsc, Notify};
 
-use futures::FutureExt;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering::*},
@@ -22,7 +21,13 @@ mod shrink;
 use self::id_data::{IdData, Include};
 use self::shrink::{ShrinkMap, ShrinkVec};
 
-pub(crate) struct Aggregator {
+/// Aggregates instrumentation traces and prepares state for the instrument
+/// server.
+///
+/// The `Aggregator` is responsible for receiving and organizing the
+/// instrumentated events and preparing the data to be served to a instrument
+/// client.
+pub struct Aggregator {
     /// Channel of incoming events emitted by `TaskLayer`s.
     events: mpsc::Receiver<Event>,
 
@@ -157,7 +162,12 @@ impl Aggregator {
         }
     }
 
-    pub(crate) async fn run(mut self) {
+    /// Runs the aggregator.
+    ///
+    /// This method will start the aggregator loop and should run as long as
+    /// the instrument server is running. If the instrument server stops,
+    /// this future can be aborted.
+    pub async fn run(mut self) {
         let mut publish = tokio::time::interval(self.publish_interval);
         loop {
             let should_send = tokio::select! {
@@ -210,7 +220,7 @@ impl Aggregator {
             // to be woken when the flush interval has elapsed, or when the
             // channel is almost full.
             let mut drained = false;
-            while let Some(event) = self.events.recv().now_or_never() {
+            while let Some(event) = recv_now_or_never(&mut self.events) {
                 match event {
                     Some(event) => {
                         self.update_state(event);
@@ -486,6 +496,16 @@ impl Aggregator {
                 self.async_op_stats.insert(id, stats);
             }
         }
+    }
+}
+
+fn recv_now_or_never<T>(receiver: &mut mpsc::Receiver<T>) -> Option<Option<T>> {
+    let waker = futures_task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+
+    match receiver.poll_recv(&mut cx) {
+        std::task::Poll::Ready(opt) => Some(opt),
+        std::task::Poll::Pending => None,
     }
 }
 

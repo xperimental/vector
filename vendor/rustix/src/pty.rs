@@ -23,7 +23,7 @@ use crate::{fd::FromRawFd, ioctl};
 bitflags::bitflags! {
     /// `O_*` flags for use with [`openpt`] and [`ioctl_tiocgptpeer`].
     ///
-    /// [`ioctl_tiocgtpeer`]: https://docs.rs/rustix/*/x86_64-unknown-linux-gnu/rustix/pty/fn.ioctl_tiocgtpeer.html
+    /// [`ioctl_tiocgptpeer`]: https://docs.rs/rustix/*/x86_64-unknown-linux-gnu/rustix/pty/fn.ioctl_tiocgptpeer.html
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct OpenptFlags: u32 {
@@ -31,7 +31,7 @@ bitflags::bitflags! {
         const RDWR = c::O_RDWR as c::c_uint;
 
         /// `O_NOCTTY`
-        #[cfg(not(any(target_os = "espidf", target_os = "l4re", target_os = "redox")))]
+        #[cfg(not(any(target_os = "espidf", target_os = "l4re", target_os = "redox", target_os = "vita")))]
         const NOCTTY = c::O_NOCTTY as c::c_uint;
 
         /// `O_CLOEXEC`
@@ -41,7 +41,7 @@ bitflags::bitflags! {
         #[cfg(any(linux_kernel, target_os = "freebsd", target_os = "netbsd"))]
         const CLOEXEC = c::O_CLOEXEC as c::c_uint;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }

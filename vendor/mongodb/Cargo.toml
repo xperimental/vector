@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "mongodb"
-version = "2.7.0"
+version = "2.7.1"
 authors = [
     "Saghm Rossi <saghmrossi@gmail.com>",
     "Patrick Freed <patrick.freed@mongodb.com>",

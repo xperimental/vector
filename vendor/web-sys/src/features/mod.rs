@@ -220,6 +220,12 @@ mod gen_AudioContext;
 #[cfg(feature = "AudioContext")]
 pub use gen_AudioContext::*;
 
+#[cfg(feature = "AudioContextLatencyCategory")]
+#[allow(non_snake_case)]
+mod gen_AudioContextLatencyCategory;
+#[cfg(feature = "AudioContextLatencyCategory")]
+pub use gen_AudioContextLatencyCategory::*;
+
 #[cfg(feature = "AudioContextOptions")]
 #[allow(non_snake_case)]
 mod gen_AudioContextOptions;
@@ -351,6 +357,24 @@ pub use gen_AudioSampleFormat::*;
 mod gen_AudioScheduledSourceNode;
 #[cfg(feature = "AudioScheduledSourceNode")]
 pub use gen_AudioScheduledSourceNode::*;
+
+#[cfg(feature = "AudioSinkInfo")]
+#[allow(non_snake_case)]
+mod gen_AudioSinkInfo;
+#[cfg(feature = "AudioSinkInfo")]
+pub use gen_AudioSinkInfo::*;
+
+#[cfg(feature = "AudioSinkOptions")]
+#[allow(non_snake_case)]
+mod gen_AudioSinkOptions;
+#[cfg(feature = "AudioSinkOptions")]
+pub use gen_AudioSinkOptions::*;
+
+#[cfg(feature = "AudioSinkType")]
+#[allow(non_snake_case)]
+mod gen_AudioSinkType;
+#[cfg(feature = "AudioSinkType")]
+pub use gen_AudioSinkType::*;
 
 #[cfg(feature = "AudioStreamTrack")]
 #[allow(non_snake_case)]
@@ -1624,6 +1648,18 @@ mod gen_DomMatrix;
 #[cfg(feature = "DomMatrix")]
 pub use gen_DomMatrix::*;
 
+#[cfg(feature = "DomMatrix2dInit")]
+#[allow(non_snake_case)]
+mod gen_DomMatrix2dInit;
+#[cfg(feature = "DomMatrix2dInit")]
+pub use gen_DomMatrix2dInit::*;
+
+#[cfg(feature = "DomMatrixInit")]
+#[allow(non_snake_case)]
+mod gen_DomMatrixInit;
+#[cfg(feature = "DomMatrixInit")]
+pub use gen_DomMatrixInit::*;
+
 #[cfg(feature = "DomMatrixReadOnly")]
 #[allow(non_snake_case)]
 mod gen_DomMatrixReadOnly;
@@ -2440,12 +2476,6 @@ mod gen_GetAnimationsOptions;
 #[cfg(feature = "GetAnimationsOptions")]
 pub use gen_GetAnimationsOptions::*;
 
-#[cfg(feature = "GetNotificationOptions")]
-#[allow(non_snake_case)]
-mod gen_GetNotificationOptions;
-#[cfg(feature = "GetNotificationOptions")]
-pub use gen_GetNotificationOptions::*;
-
 #[cfg(feature = "GetRootNodeOptions")]
 #[allow(non_snake_case)]
 mod gen_GetRootNodeOptions;
@@ -2674,17 +2704,11 @@ mod gen_GpuComputePassEncoder;
 #[cfg(feature = "GpuComputePassEncoder")]
 pub use gen_GpuComputePassEncoder::*;
 
-#[cfg(feature = "GpuComputePassTimestampLocation")]
+#[cfg(feature = "GpuComputePassTimestampWrites")]
 #[allow(non_snake_case)]
-mod gen_GpuComputePassTimestampLocation;
-#[cfg(feature = "GpuComputePassTimestampLocation")]
-pub use gen_GpuComputePassTimestampLocation::*;
-
-#[cfg(feature = "GpuComputePassTimestampWrite")]
-#[allow(non_snake_case)]
-mod gen_GpuComputePassTimestampWrite;
-#[cfg(feature = "GpuComputePassTimestampWrite")]
-pub use gen_GpuComputePassTimestampWrite::*;
+mod gen_GpuComputePassTimestampWrites;
+#[cfg(feature = "GpuComputePassTimestampWrites")]
+pub use gen_GpuComputePassTimestampWrites::*;
 
 #[cfg(feature = "GpuComputePipeline")]
 #[allow(non_snake_case)]
@@ -2884,6 +2908,24 @@ mod gen_GpuPipelineDescriptorBase;
 #[cfg(feature = "GpuPipelineDescriptorBase")]
 pub use gen_GpuPipelineDescriptorBase::*;
 
+#[cfg(feature = "GpuPipelineError")]
+#[allow(non_snake_case)]
+mod gen_GpuPipelineError;
+#[cfg(feature = "GpuPipelineError")]
+pub use gen_GpuPipelineError::*;
+
+#[cfg(feature = "GpuPipelineErrorInit")]
+#[allow(non_snake_case)]
+mod gen_GpuPipelineErrorInit;
+#[cfg(feature = "GpuPipelineErrorInit")]
+pub use gen_GpuPipelineErrorInit::*;
+
+#[cfg(feature = "GpuPipelineErrorReason")]
+#[allow(non_snake_case)]
+mod gen_GpuPipelineErrorReason;
+#[cfg(feature = "GpuPipelineErrorReason")]
+pub use gen_GpuPipelineErrorReason::*;
+
 #[cfg(feature = "GpuPipelineLayout")]
 #[allow(non_snake_case)]
 mod gen_GpuPipelineLayout;
@@ -3004,17 +3046,11 @@ mod gen_GpuRenderPassLayout;
 #[cfg(feature = "GpuRenderPassLayout")]
 pub use gen_GpuRenderPassLayout::*;
 
-#[cfg(feature = "GpuRenderPassTimestampLocation")]
+#[cfg(feature = "GpuRenderPassTimestampWrites")]
 #[allow(non_snake_case)]
-mod gen_GpuRenderPassTimestampLocation;
-#[cfg(feature = "GpuRenderPassTimestampLocation")]
-pub use gen_GpuRenderPassTimestampLocation::*;
-
-#[cfg(feature = "GpuRenderPassTimestampWrite")]
-#[allow(non_snake_case)]
-mod gen_GpuRenderPassTimestampWrite;
-#[cfg(feature = "GpuRenderPassTimestampWrite")]
-pub use gen_GpuRenderPassTimestampWrite::*;
+mod gen_GpuRenderPassTimestampWrites;
+#[cfg(feature = "GpuRenderPassTimestampWrites")]
+pub use gen_GpuRenderPassTimestampWrites::*;
 
 #[cfg(feature = "GpuRenderPipeline")]
 #[allow(non_snake_case)]
@@ -4180,6 +4216,12 @@ mod gen_IntlUtils;
 #[cfg(feature = "IntlUtils")]
 pub use gen_IntlUtils::*;
 
+#[cfg(feature = "IsInputPendingOptions")]
+#[allow(non_snake_case)]
+mod gen_IsInputPendingOptions;
+#[cfg(feature = "IsInputPendingOptions")]
+pub use gen_IsInputPendingOptions::*;
+
 #[cfg(feature = "IterableKeyAndValueResult")]
 #[allow(non_snake_case)]
 mod gen_IterableKeyAndValueResult;
@@ -4305,6 +4347,42 @@ pub use gen_LocaleInfo::*;
 mod gen_Location;
 #[cfg(feature = "Location")]
 pub use gen_Location::*;
+
+#[cfg(feature = "Lock")]
+#[allow(non_snake_case)]
+mod gen_Lock;
+#[cfg(feature = "Lock")]
+pub use gen_Lock::*;
+
+#[cfg(feature = "LockInfo")]
+#[allow(non_snake_case)]
+mod gen_LockInfo;
+#[cfg(feature = "LockInfo")]
+pub use gen_LockInfo::*;
+
+#[cfg(feature = "LockManager")]
+#[allow(non_snake_case)]
+mod gen_LockManager;
+#[cfg(feature = "LockManager")]
+pub use gen_LockManager::*;
+
+#[cfg(feature = "LockManagerSnapshot")]
+#[allow(non_snake_case)]
+mod gen_LockManagerSnapshot;
+#[cfg(feature = "LockManagerSnapshot")]
+pub use gen_LockManagerSnapshot::*;
+
+#[cfg(feature = "LockMode")]
+#[allow(non_snake_case)]
+mod gen_LockMode;
+#[cfg(feature = "LockMode")]
+pub use gen_LockMode::*;
+
+#[cfg(feature = "LockOptions")]
+#[allow(non_snake_case)]
+mod gen_LockOptions;
+#[cfg(feature = "LockOptions")]
+pub use gen_LockOptions::*;
 
 #[cfg(feature = "MediaCapabilities")]
 #[allow(non_snake_case)]
@@ -5008,11 +5086,11 @@ mod gen_Notification;
 #[cfg(feature = "Notification")]
 pub use gen_Notification::*;
 
-#[cfg(feature = "NotificationBehavior")]
+#[cfg(feature = "NotificationAction")]
 #[allow(non_snake_case)]
-mod gen_NotificationBehavior;
-#[cfg(feature = "NotificationBehavior")]
-pub use gen_NotificationBehavior::*;
+mod gen_NotificationAction;
+#[cfg(feature = "NotificationAction")]
+pub use gen_NotificationAction::*;
 
 #[cfg(feature = "NotificationDirection")]
 #[allow(non_snake_case)]
@@ -6562,6 +6640,24 @@ mod gen_RtcrtpStreamStats;
 #[cfg(feature = "RtcrtpStreamStats")]
 pub use gen_RtcrtpStreamStats::*;
 
+#[cfg(feature = "Scheduler")]
+#[allow(non_snake_case)]
+mod gen_Scheduler;
+#[cfg(feature = "Scheduler")]
+pub use gen_Scheduler::*;
+
+#[cfg(feature = "SchedulerPostTaskOptions")]
+#[allow(non_snake_case)]
+mod gen_SchedulerPostTaskOptions;
+#[cfg(feature = "SchedulerPostTaskOptions")]
+pub use gen_SchedulerPostTaskOptions::*;
+
+#[cfg(feature = "Scheduling")]
+#[allow(non_snake_case)]
+mod gen_Scheduling;
+#[cfg(feature = "Scheduling")]
+pub use gen_Scheduling::*;
+
 #[cfg(feature = "Screen")]
 #[allow(non_snake_case)]
 mod gen_Screen;
@@ -7810,6 +7906,48 @@ mod gen_SvgtSpanElement;
 #[cfg(feature = "SvgtSpanElement")]
 pub use gen_SvgtSpanElement::*;
 
+#[cfg(feature = "TaskController")]
+#[allow(non_snake_case)]
+mod gen_TaskController;
+#[cfg(feature = "TaskController")]
+pub use gen_TaskController::*;
+
+#[cfg(feature = "TaskControllerInit")]
+#[allow(non_snake_case)]
+mod gen_TaskControllerInit;
+#[cfg(feature = "TaskControllerInit")]
+pub use gen_TaskControllerInit::*;
+
+#[cfg(feature = "TaskPriority")]
+#[allow(non_snake_case)]
+mod gen_TaskPriority;
+#[cfg(feature = "TaskPriority")]
+pub use gen_TaskPriority::*;
+
+#[cfg(feature = "TaskPriorityChangeEvent")]
+#[allow(non_snake_case)]
+mod gen_TaskPriorityChangeEvent;
+#[cfg(feature = "TaskPriorityChangeEvent")]
+pub use gen_TaskPriorityChangeEvent::*;
+
+#[cfg(feature = "TaskPriorityChangeEventInit")]
+#[allow(non_snake_case)]
+mod gen_TaskPriorityChangeEventInit;
+#[cfg(feature = "TaskPriorityChangeEventInit")]
+pub use gen_TaskPriorityChangeEventInit::*;
+
+#[cfg(feature = "TaskSignal")]
+#[allow(non_snake_case)]
+mod gen_TaskSignal;
+#[cfg(feature = "TaskSignal")]
+pub use gen_TaskSignal::*;
+
+#[cfg(feature = "TaskSignalAnyInit")]
+#[allow(non_snake_case)]
+mod gen_TaskSignalAnyInit;
+#[cfg(feature = "TaskSignalAnyInit")]
+pub use gen_TaskSignalAnyInit::*;
+
 #[cfg(feature = "TcpReadyState")]
 #[allow(non_snake_case)]
 mod gen_TcpReadyState;
@@ -8452,6 +8590,12 @@ mod gen_VideoTransferCharacteristics;
 #[cfg(feature = "VideoTransferCharacteristics")]
 pub use gen_VideoTransferCharacteristics::*;
 
+#[cfg(feature = "ViewTransition")]
+#[allow(non_snake_case)]
+mod gen_ViewTransition;
+#[cfg(feature = "ViewTransition")]
+pub use gen_ViewTransition::*;
+
 #[cfg(feature = "VisibilityState")]
 #[allow(non_snake_case)]
 mod gen_VisibilityState;
@@ -8931,6 +9075,12 @@ pub use gen_WebglMultiDraw::*;
 mod gen_WebrtcGlobalStatisticsReport;
 #[cfg(feature = "WebrtcGlobalStatisticsReport")]
 pub use gen_WebrtcGlobalStatisticsReport::*;
+
+#[cfg(feature = "WgslLanguageFeatures")]
+#[allow(non_snake_case)]
+mod gen_WgslLanguageFeatures;
+#[cfg(feature = "WgslLanguageFeatures")]
+pub use gen_WgslLanguageFeatures::*;
 
 #[cfg(feature = "WheelEvent")]
 #[allow(non_snake_case)]

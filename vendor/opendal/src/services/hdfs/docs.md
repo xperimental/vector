@@ -15,6 +15,7 @@ This service can be used to:
 - [ ] ~~scan~~
 - [ ] ~~presign~~
 - [x] blocking
+- [x] append
 
 ## Differences with webhdfs
 
@@ -28,6 +29,8 @@ HDFS support needs to enable feature `services-hdfs`.
 
 - `root`: Set the work dir for backend.
 - `name_node`: Set the name node for backend.
+- `kerberos_ticket_cache_path`: Set the kerberos ticket cache path for backend, this should be gotten by `klist` after `kinit`
+- `user`: Set the user for backend
 
 Refer to [`HdfsBuilder`]'s public API docs for more information.
 
@@ -75,7 +78,7 @@ export HADOOP_CONF_DIR=<path of the config folder>
 ```
 3. Append the HADOOP_CONF_DIR to the `CLASSPATH`
 ```shell
-export CLASSPATH=$CLASSPATH:$HADOOP_CONF_DIR
+export CLASSPATH=$HADOOP_CONF_DIR:$HADOOP_CLASSPATH:$CLASSPATH
 ```
 4. Use the `cluster_name` specified in the `core-site.xml` file (located in the HADOOP_CONF_DIR folder) to replace namenode:port.
 

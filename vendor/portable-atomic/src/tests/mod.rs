@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 #![allow(
     clippy::alloc_instead_of_core,
     clippy::std_instead_of_alloc,
@@ -82,7 +84,7 @@ fn test_is_lock_free() {
             feature = "fallback",
             target_arch = "arm",
             not(any(miri, portable_atomic_sanitize_thread)),
-            any(not(portable_atomic_no_asm), portable_atomic_unstable_asm),
+            not(portable_atomic_no_asm),
             any(target_os = "linux", target_os = "android"),
             not(any(target_feature = "v6", portable_atomic_target_feature = "v6")),
             not(portable_atomic_no_outline_atomics),
@@ -318,8 +320,7 @@ LLVM version: 15.0.3",
 #[cfg(feature = "serde")]
 #[test]
 fn test_serde() {
-    use serde_test::{assert_tokens, Token};
-    use test_helper::serde::DebugPartialEq;
+    use test_helper::serde::{assert_tokens, DebugPartialEq, Token};
 
     macro_rules! t {
         ($atomic_type:ty, $value_type:ident, $token_type:ident) => {
@@ -346,7 +347,7 @@ fn test_serde() {
     t!(AtomicU32, u32, U32);
     t!(AtomicI64, i64, I64);
     t!(AtomicU64, u64, U64);
-    // TODO: serde_test doesn't support Token::{I128,U128}
+    // TODO: serde_test doesn't support Token::{I128,U128}: https://github.com/serde-rs/test/pull/6
     // t!(AtomicI128, i128, I128);
     // t!(AtomicU128, u128, U128);
     #[cfg(feature = "float")]

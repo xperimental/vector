@@ -24,10 +24,10 @@ mod azblob;
 #[cfg(feature = "services-azblob")]
 pub use azblob::Azblob;
 
-#[cfg(feature = "services-azdfs")]
-mod azdfs;
-#[cfg(feature = "services-azdfs")]
-pub use azdfs::Azdfs;
+#[cfg(feature = "services-azdls")]
+mod azdls;
+#[cfg(feature = "services-azdls")]
+pub use azdls::Azdls;
 
 #[cfg(feature = "services-cos")]
 mod cos;
@@ -38,6 +38,11 @@ pub use cos::Cos;
 mod dashmap;
 #[cfg(feature = "services-dashmap")]
 pub use self::dashmap::Dashmap;
+
+#[cfg(feature = "services-etcd")]
+mod etcd;
+#[cfg(feature = "services-etcd")]
+pub use self::etcd::Etcd;
 
 #[cfg(feature = "services-fs")]
 mod fs;
@@ -114,6 +119,11 @@ mod cacache;
 #[cfg(feature = "services-cacache")]
 pub use self::cacache::Cacache;
 
+#[cfg(feature = "services-persy")]
+mod persy;
+#[cfg(feature = "services-persy")]
+pub use self::persy::Persy;
+
 #[cfg(feature = "services-redis")]
 mod redis;
 #[cfg(feature = "services-redis")]
@@ -183,3 +193,33 @@ pub use vercel_artifacts::VercelArtifacts;
 mod redb;
 #[cfg(feature = "services-redb")]
 pub use self::redb::Redb;
+
+#[cfg(feature = "services-tikv")]
+mod tikv;
+#[cfg(feature = "services-tikv")]
+pub use self::tikv::Tikv;
+
+#[cfg(feature = "services-foundationdb")]
+mod foundationdb;
+#[cfg(feature = "services-foundationdb")]
+pub use self::foundationdb::Foundationdb;
+
+#[cfg(feature = "services-postgresql")]
+mod postgresql;
+#[cfg(feature = "services-postgresql")]
+pub use self::postgresql::Postgresql;
+
+#[cfg(feature = "services-atomicserver")]
+mod atomicserver;
+#[cfg(feature = "services-atomicserver")]
+pub use self::atomicserver::Atomicserver;
+
+#[cfg(feature = "services-mysql")]
+mod mysql;
+#[cfg(feature = "services-mysql")]
+pub use self::mysql::Mysql;
+
+#[cfg(feature = "services-sqlite")]
+mod sqlite;
+#[cfg(feature = "services-sqlite")]
+pub use self::sqlite::Sqlite;

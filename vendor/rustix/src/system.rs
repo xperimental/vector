@@ -10,7 +10,7 @@ use crate::backend;
 #[cfg(target_os = "linux")]
 use crate::backend::c;
 use crate::ffi::CStr;
-#[cfg(not(any(target_os = "espidf", target_os = "emscripten")))]
+#[cfg(not(any(target_os = "espidf", target_os = "emscripten", target_os = "vita")))]
 use crate::io;
 use core::fmt;
 
@@ -19,6 +19,8 @@ pub use backend::system::types::Sysinfo;
 
 /// `uname()`—Returns high-level information about the runtime OS and
 /// hardware.
+///
+/// For `gethostname()`, use [`Uname::nodename`] on the result.
 ///
 /// # References
 ///  - [POSIX]
@@ -40,6 +42,7 @@ pub use backend::system::types::Sysinfo;
 /// [DragonFly BSD]: https://man.dragonflybsd.org/?command=uname&section=3
 /// [illumos]: https://illumos.org/man/2/uname
 /// [glibc]: https://www.gnu.org/software/libc/manual/html_node/Platform-Type.html
+#[doc(alias = "gethostname")]
 #[inline]
 pub fn uname() -> Uname {
     Uname(backend::system::syscalls::uname())
@@ -61,6 +64,8 @@ impl Uname {
     /// This is intended to be a network name, however it's unable to convey
     /// information about hosts that have multiple names, or any information
     /// about where the names are visible.
+    ///
+    /// This corresponds to the `gethostname` value.
     #[inline]
     pub fn nodename(&self) -> &CStr {
         Self::to_cstr(self.0.nodename.as_ptr().cast())
@@ -150,6 +155,7 @@ pub fn sysinfo() -> Sysinfo {
     target_os = "emscripten",
     target_os = "espidf",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi"
 )))]
 #[inline]
@@ -181,7 +187,7 @@ pub enum RebootCommand {
     ///
     /// [`kexec_load`]: https://man7.org/linux/man-pages/man2/kexec_load.2.html
     Kexec = c::LINUX_REBOOT_CMD_KEXEC,
-    /// Prints the message "Power down.", stops the system and tries to remove
+    /// Prints the message "Power down.", stops the system, and tries to remove
     /// all power
     PowerOff = c::LINUX_REBOOT_CMD_POWER_OFF,
     /// Prints the message "Restarting system." and triggers a restart
@@ -195,8 +201,8 @@ pub enum RebootCommand {
 /// The reboot syscall, despite the name, can actually do much more than
 /// reboot.
 ///
-/// Among other things it can
-/// - Restart, Halt, Power Off and Suspend the system
+/// Among other things, it can:
+/// - Restart, Halt, Power Off, and Suspend the system
 /// - Enable and disable the Ctrl-Alt-Del keystroke
 /// - Execute other kernels
 /// - Terminate init inside PID namespaces

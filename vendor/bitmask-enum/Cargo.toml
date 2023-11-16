@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "bitmask-enum"
-version = "2.2.2"
+version = "2.2.3"
 authors = ["Lukas3674 <lukashassler@web.de>"]
 description = "A bitmask enum attribute macro"
 documentation = "https://docs.rs/bitmask-enum"

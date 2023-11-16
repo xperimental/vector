@@ -27,13 +27,14 @@ use http::header::CACHE_CONTROL;
 use http::header::CONTENT_DISPOSITION;
 use http::header::CONTENT_LENGTH;
 use http::header::CONTENT_TYPE;
+use http::header::HOST;
 use http::header::IF_MATCH;
 use http::header::IF_NONE_MATCH;
 use http::HeaderValue;
 use http::Request;
 use http::Response;
 use reqsign::AwsCredential;
-use reqsign::AwsLoader;
+use reqsign::AwsCredentialLoad;
 use reqsign::AwsV4Signer;
 use serde::Deserialize;
 use serde::Serialize;
@@ -63,6 +64,7 @@ mod constants {
         "x-amz-copy-source-server-side-encryption-customer-key-md5";
 
     pub const RESPONSE_CONTENT_DISPOSITION: &str = "response-content-disposition";
+    pub const RESPONSE_CONTENT_TYPE: &str = "response-content-type";
     pub const RESPONSE_CACHE_CONTROL: &str = "response-cache-control";
 }
 
@@ -77,11 +79,11 @@ pub struct S3Core {
     pub server_side_encryption_customer_key_md5: Option<HeaderValue>,
     pub default_storage_class: Option<HeaderValue>,
     pub allow_anonymous: bool,
+    pub enable_exact_buf_write: bool,
 
     pub signer: AwsV4Signer,
-    pub loader: AwsLoader,
+    pub loader: Box<dyn AwsCredentialLoad>,
     pub client: HttpClient,
-    pub write_min_size: usize,
     pub batch_max_operations: usize,
 }
 
@@ -100,7 +102,7 @@ impl S3Core {
     async fn load_credential(&self) -> Result<Option<AwsCredential>> {
         let cred = self
             .loader
-            .load()
+            .load_credential(self.client.client())
             .await
             .map_err(new_request_credential_error)?;
 
@@ -126,7 +128,19 @@ impl S3Core {
             return Ok(());
         };
 
-        self.signer.sign(req, &cred).map_err(new_request_sign_error)
+        self.signer
+            .sign(req, &cred)
+            .map_err(new_request_sign_error)?;
+
+        // Always remove host header, let users' client to set it based on HTTP
+        // version.
+        //
+        // As discussed in <https://github.com/seanmonstar/reqwest/issues/1809>,
+        // google server could send RST_STREAM of PROTOCOL_ERROR if our request
+        // contains host header.
+        req.headers_mut().remove(HOST);
+
+        Ok(())
     }
 
     pub async fn sign_query<T>(&self, req: &mut Request<T>, duration: Duration) -> Result<()> {
@@ -138,7 +152,17 @@ impl S3Core {
 
         self.signer
             .sign_query(req, duration, &cred)
-            .map_err(new_request_sign_error)
+            .map_err(new_request_sign_error)?;
+
+        // Always remove host header, let users' client to set it based on HTTP
+        // version.
+        //
+        // As discussed in <https://github.com/seanmonstar/reqwest/issues/1809>,
+        // google server could send RST_STREAM of PROTOCOL_ERROR if our request
+        // contains host header.
+        req.headers_mut().remove(HOST);
+
+        Ok(())
     }
 
     #[inline]
@@ -238,15 +262,7 @@ impl S3Core {
         Ok(req)
     }
 
-    pub fn s3_get_object_request(
-        &self,
-        path: &str,
-        range: BytesRange,
-        override_content_disposition: Option<&str>,
-        override_cache_control: Option<&str>,
-        if_none_match: Option<&str>,
-        if_match: Option<&str>,
-    ) -> Result<Request<AsyncBody>> {
+    pub fn s3_get_object_request(&self, path: &str, args: OpRead) -> Result<Request<AsyncBody>> {
         let p = build_abs_path(&self.root, path);
 
         // Construct headers to add to the request
@@ -254,14 +270,21 @@ impl S3Core {
 
         // Add query arguments to the URL based on response overrides
         let mut query_args = Vec::new();
-        if let Some(override_content_disposition) = override_content_disposition {
+        if let Some(override_content_disposition) = args.override_content_disposition() {
             query_args.push(format!(
                 "{}={}",
                 constants::RESPONSE_CONTENT_DISPOSITION,
                 percent_encode_path(override_content_disposition)
             ))
         }
-        if let Some(override_cache_control) = override_cache_control {
+        if let Some(override_content_type) = args.override_content_type() {
+            query_args.push(format!(
+                "{}={}",
+                constants::RESPONSE_CONTENT_TYPE,
+                percent_encode_path(override_content_type)
+            ))
+        }
+        if let Some(override_cache_control) = args.override_cache_control() {
             query_args.push(format!(
                 "{}={}",
                 constants::RESPONSE_CACHE_CONTROL,
@@ -274,15 +297,16 @@ impl S3Core {
 
         let mut req = Request::get(&url);
 
+        let range = args.range();
         if !range.is_full() {
             req = req.header(http::header::RANGE, range.to_header());
         }
 
-        if let Some(if_none_match) = if_none_match {
+        if let Some(if_none_match) = args.if_none_match() {
             req = req.header(IF_NONE_MATCH, if_none_match);
         }
 
-        if let Some(if_match) = if_match {
+        if let Some(if_match) = args.if_match() {
             req = req.header(IF_MATCH, if_match);
         }
         // Set SSE headers.
@@ -299,19 +323,9 @@ impl S3Core {
     pub async fn s3_get_object(
         &self,
         path: &str,
-        range: BytesRange,
-        if_none_match: Option<&str>,
-        if_match: Option<&str>,
-        override_content_disposition: Option<&str>,
+        args: OpRead,
     ) -> Result<Response<IncomingAsyncBody>> {
-        let mut req = self.s3_get_object_request(
-            path,
-            range,
-            override_content_disposition,
-            None,
-            if_none_match,
-            if_match,
-        )?;
+        let mut req = self.s3_get_object_request(path, args)?;
 
         self.sign(&mut req).await?;
 
@@ -322,9 +336,7 @@ impl S3Core {
         &self,
         path: &str,
         size: Option<u64>,
-        content_type: Option<&str>,
-        content_disposition: Option<&str>,
-        cache_control: Option<&str>,
+        args: &OpWrite,
         body: AsyncBody,
     ) -> Result<Request<AsyncBody>> {
         let p = build_abs_path(&self.root, path);
@@ -334,18 +346,18 @@ impl S3Core {
         let mut req = Request::put(&url);
 
         if let Some(size) = size {
-            req = req.header(CONTENT_LENGTH, size)
+            req = req.header(CONTENT_LENGTH, size.to_string())
         }
 
-        if let Some(mime) = content_type {
+        if let Some(mime) = args.content_type() {
             req = req.header(CONTENT_TYPE, mime)
         }
 
-        if let Some(pos) = content_disposition {
+        if let Some(pos) = args.content_disposition() {
             req = req.header(CONTENT_DISPOSITION, pos)
         }
 
-        if let Some(cache_control) = cache_control {
+        if let Some(cache_control) = args.cache_control() {
             req = req.header(CACHE_CONTROL, cache_control)
         }
 
@@ -443,7 +455,7 @@ impl S3Core {
         }
 
         let mut req = req
-            .header(constants::X_AMZ_COPY_SOURCE, percent_encode_path(&source))
+            .header(constants::X_AMZ_COPY_SOURCE, &source)
             .body(AsyncBody::Empty)
             .map_err(new_request_build_error)?;
 
@@ -503,9 +515,7 @@ impl S3Core {
     pub async fn s3_initiate_multipart_upload(
         &self,
         path: &str,
-        content_type: Option<&str>,
-        content_disposition: Option<&str>,
-        cache_control: Option<&str>,
+        args: &OpWrite,
     ) -> Result<Response<IncomingAsyncBody>> {
         let p = build_abs_path(&self.root, path);
 
@@ -513,15 +523,15 @@ impl S3Core {
 
         let mut req = Request::post(&url);
 
-        if let Some(mime) = content_type {
+        if let Some(mime) = args.content_type() {
             req = req.header(CONTENT_TYPE, mime)
         }
 
-        if let Some(content_disposition) = content_disposition {
+        if let Some(content_disposition) = args.content_disposition() {
             req = req.header(CONTENT_DISPOSITION, content_disposition)
         }
 
-        if let Some(cache_control) = cache_control {
+        if let Some(cache_control) = args.cache_control() {
             req = req.header(CACHE_CONTROL, cache_control)
         }
 
@@ -547,7 +557,7 @@ impl S3Core {
         path: &str,
         upload_id: &str,
         part_number: usize,
-        size: Option<u64>,
+        size: u64,
         body: AsyncBody,
     ) -> Result<Request<AsyncBody>> {
         let p = build_abs_path(&self.root, path);
@@ -562,9 +572,7 @@ impl S3Core {
 
         let mut req = Request::put(&url);
 
-        if let Some(size) = size {
-            req = req.header(CONTENT_LENGTH, size);
-        }
+        req = req.header(CONTENT_LENGTH, size);
 
         // Set SSE headers.
         req = self.insert_sse_headers(req, true);
@@ -579,7 +587,7 @@ impl S3Core {
         &self,
         path: &str,
         upload_id: &str,
-        parts: &[CompleteMultipartUploadRequestPart],
+        parts: Vec<CompleteMultipartUploadRequestPart>,
     ) -> Result<Response<IncomingAsyncBody>> {
         let p = build_abs_path(&self.root, path);
 
@@ -595,10 +603,8 @@ impl S3Core {
         // Set SSE headers.
         let req = self.insert_sse_headers(req, true);
 
-        let content = quick_xml::se::to_string(&CompleteMultipartUploadRequest {
-            part: parts.to_vec(),
-        })
-        .map_err(new_xml_deserialize_error)?;
+        let content = quick_xml::se::to_string(&CompleteMultipartUploadRequest { part: parts })
+            .map_err(new_xml_deserialize_error)?;
         // Make sure content length has been set to avoid post with chunked encoding.
         let req = req.header(CONTENT_LENGTH, content.len());
         // Set content-type to `application/xml` to avoid mixed with form post.

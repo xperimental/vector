@@ -1,10 +1,10 @@
 use crate::ast::{Enum, Field, Input, Struct};
 use crate::attr::Trait;
 use crate::generics::InferredBounds;
+use crate::span::MemberSpan;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned, ToTokens};
 use std::collections::BTreeSet as Set;
-use syn::spanned::Spanned;
 use syn::{
     Data, DeriveInput, GenericArgument, Member, PathArguments, Result, Token, Type, Visibility,
 };
@@ -23,13 +23,13 @@ fn impl_struct(input: Struct) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     let mut error_inferred_bounds = InferredBounds::new();
 
-    let source_body = if input.attrs.transparent.is_some() {
+    let source_body = if let Some(transparent_attr) = &input.attrs.transparent {
         let only_field = &input.fields[0];
         if only_field.contains_generic {
             error_inferred_bounds.insert(only_field.ty, quote!(std::error::Error));
         }
         let member = &only_field.member;
-        Some(quote! {
+        Some(quote_spanned! {transparent_attr.span=>
             std::error::Error::source(self.#member.as_dyn_error())
         })
     } else if let Some(source_field) = input.source_field() {
@@ -39,11 +39,13 @@ fn impl_struct(input: Struct) -> TokenStream {
             error_inferred_bounds.insert(ty, quote!(std::error::Error + 'static));
         }
         let asref = if type_is_option(source_field.ty) {
-            Some(quote_spanned!(source.span()=> .as_ref()?))
+            Some(quote_spanned!(source.member_span()=> .as_ref()?))
         } else {
             None
         };
-        let dyn_error = quote_spanned!(source.span()=> self.#source #asref.as_dyn_error());
+        let dyn_error = quote_spanned! {source_field.source_span()=>
+            self.#source #asref.as_dyn_error()
+        };
         Some(quote! {
             ::core::option::Option::Some(#dyn_error)
         })
@@ -65,13 +67,13 @@ fn impl_struct(input: Struct) -> TokenStream {
         let body = if let Some(source_field) = input.source_field() {
             let source = &source_field.member;
             let source_provide = if type_is_option(source_field.ty) {
-                quote_spanned! {source.span()=>
+                quote_spanned! {source.member_span()=>
                     if let ::core::option::Option::Some(source) = &self.#source {
                         source.thiserror_provide(#request);
                     }
                 }
             } else {
-                quote_spanned! {source.span()=>
+                quote_spanned! {source.member_span()=>
                     self.#source.thiserror_provide(#request);
                 }
             };
@@ -193,13 +195,15 @@ fn impl_enum(input: Enum) -> TokenStream {
     let source_method = if input.has_source() {
         let arms = input.variants.iter().map(|variant| {
             let ident = &variant.ident;
-            if variant.attrs.transparent.is_some() {
+            if let Some(transparent_attr) = &variant.attrs.transparent {
                 let only_field = &variant.fields[0];
                 if only_field.contains_generic {
                     error_inferred_bounds.insert(only_field.ty, quote!(std::error::Error));
                 }
                 let member = &only_field.member;
-                let source = quote!(std::error::Error::source(transparent.as_dyn_error()));
+                let source = quote_spanned! {transparent_attr.span=>
+                    std::error::Error::source(transparent.as_dyn_error())
+                };
                 quote! {
                     #ty::#ident {#member: transparent} => #source,
                 }
@@ -210,12 +214,14 @@ fn impl_enum(input: Enum) -> TokenStream {
                     error_inferred_bounds.insert(ty, quote!(std::error::Error + 'static));
                 }
                 let asref = if type_is_option(source_field.ty) {
-                    Some(quote_spanned!(source.span()=> .as_ref()?))
+                    Some(quote_spanned!(source.member_span()=> .as_ref()?))
                 } else {
                     None
                 };
                 let varsource = quote!(source);
-                let dyn_error = quote_spanned!(source.span()=> #varsource #asref.as_dyn_error());
+                let dyn_error = quote_spanned! {source_field.source_span()=>
+                    #varsource #asref.as_dyn_error()
+                };
                 quote! {
                     #ty::#ident {#source: #varsource, ..} => ::core::option::Option::Some(#dyn_error),
                 }
@@ -250,13 +256,13 @@ fn impl_enum(input: Enum) -> TokenStream {
                     let source = &source_field.member;
                     let varsource = quote!(source);
                     let source_provide = if type_is_option(source_field.ty) {
-                        quote_spanned! {source.span()=>
+                        quote_spanned! {source.member_span()=>
                             if let ::core::option::Option::Some(source) = #varsource {
                                 source.thiserror_provide(#request);
                             }
                         }
                     } else {
-                        quote_spanned! {source.span()=>
+                        quote_spanned! {source.member_span()=>
                             #varsource.thiserror_provide(#request);
                         }
                     };
@@ -289,13 +295,13 @@ fn impl_enum(input: Enum) -> TokenStream {
                     let backtrace = &backtrace_field.member;
                     let varsource = quote!(source);
                     let source_provide = if type_is_option(source_field.ty) {
-                        quote_spanned! {backtrace.span()=>
+                        quote_spanned! {backtrace.member_span()=>
                             if let ::core::option::Option::Some(source) = #varsource {
                                 source.thiserror_provide(#request);
                             }
                         }
                     } else {
-                        quote_spanned! {backtrace.span()=>
+                        quote_spanned! {backtrace.member_span()=>
                             #varsource.thiserror_provide(#request);
                         }
                     };

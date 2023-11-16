@@ -119,9 +119,7 @@ fn run_app<B: Backend>(
     loop {
         terminal.draw(|f| ui(f, &app))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if let KeyCode::Char('q') = key.code {
@@ -136,11 +134,10 @@ fn run_app<B: Backend>(
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
-        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)].as_ref())
+        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)])
         .split(f.size());
 
     let barchart = BarChart::default()
@@ -153,7 +150,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
     draw_bar_with_group_labels(f, app, chunks[0]);
@@ -199,10 +196,7 @@ fn create_groups<'a>(app: &'a App, combine_values_and_labels: bool) -> Vec<BarGr
         .collect()
 }
 
-fn draw_bar_with_group_labels<B>(f: &mut Frame<B>, app: &App, area: Rect)
-where
-    B: Backend,
-{
+fn draw_bar_with_group_labels(f: &mut Frame, app: &App, area: Rect) {
     let groups = create_groups(app, false);
 
     let mut barchart = BarChart::default()
@@ -229,10 +223,7 @@ where
     }
 }
 
-fn draw_horizontal_bars<B>(f: &mut Frame<B>, app: &App, area: Rect)
-where
-    B: Backend,
-{
+fn draw_horizontal_bars(f: &mut Frame, app: &App, area: Rect) {
     let groups = create_groups(app, true);
 
     let mut barchart = BarChart::default()
@@ -261,10 +252,7 @@ where
     }
 }
 
-fn draw_legend<B>(f: &mut Frame<B>, area: Rect)
-where
-    B: Backend,
-{
+fn draw_legend(f: &mut Frame, area: Rect) {
     let text = vec![
         Line::from(Span::styled(
             TOTAL_REVENUE,

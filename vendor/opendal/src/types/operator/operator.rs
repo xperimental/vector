@@ -15,11 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::ops::RangeBounds;
 use std::time::Duration;
 
+use bytes::Buf;
 use bytes::Bytes;
-use flagset::FlagSet;
 use futures::stream;
 use futures::AsyncReadExt;
 use futures::Stream;
@@ -29,6 +28,7 @@ use tokio::io::ReadBuf;
 
 use super::BlockingOperator;
 use crate::operator_futures::*;
+use crate::raw::oio::WriteExt;
 use crate::raw::*;
 use crate::*;
 
@@ -81,7 +81,7 @@ impl Operator {
     pub(crate) fn from_inner(accessor: FusedAccessor) -> Self {
         let limit = accessor
             .info()
-            .capability()
+            .full_capability()
             .batch_max_operations
             .unwrap_or(1000);
         Self { accessor, limit }
@@ -151,7 +151,7 @@ impl Operator {
     /// # }
     /// ```
     pub async fn check(&self) -> Result<()> {
-        let mut ds = self.list("/").await?;
+        let mut ds = self.lister("/").await?;
 
         match ds.next().await {
             Some(Err(e)) if e.kind() != ErrorKind::NotFound => Err(e),
@@ -159,18 +159,13 @@ impl Operator {
         }
     }
 
-    /// Get current path's metadata **without cache** directly.
+    /// Get current path's metadata.
     ///
     /// # Notes
     ///
-    /// Use `stat` if you:
-    ///
-    /// - Want to detect the outside changes of path.
-    /// - Don't want to read from cached metadata.
-    ///
-    /// You may want to use `metadata` if you are working with entries
-    /// returned by [`Lister`]. It's highly possible that metadata
-    /// you want has already been cached.
+    /// For fetch metadata of entries returned by [`Lister`], it's better to use [`list_with`] and
+    /// [`lister_with`] with `metakey` query like `Metakey::ContentLength | Metakey::LastModified`
+    /// so that we can avoid extra requests.
     ///
     /// # Examples
     ///
@@ -243,107 +238,6 @@ impl Operator {
         ));
 
         fut
-    }
-
-    /// Get current metadata with cache.
-    ///
-    /// `metadata` will check the given query with already cached metadata
-    ///  first. And query from storage if not found.
-    ///
-    /// # Notes
-    ///
-    /// Use `metadata` if you are working with entries returned by
-    /// [`Lister`]. It's highly possible that metadata you want
-    /// has already been cached.
-    ///
-    /// You may want to use `stat`, if you:
-    ///
-    /// - Want to detect the outside changes of path.
-    /// - Don't want to read from cached metadata.
-    ///
-    /// # Behavior
-    ///
-    /// Visiting not fetched metadata will lead to panic in debug build.
-    /// It must be a bug, please fix it instead.
-    ///
-    /// # Examples
-    ///
-    /// ## Query already cached metadata
-    ///
-    /// By querying metadata with `None`, we can only query in-memory metadata
-    /// cache. In this way, we can make sure that no API call will be sent.
-    ///
-    /// ```
-    /// # use anyhow::Result;
-    /// # use opendal::Operator;
-    /// use opendal::Entry;
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator, entry: Entry) -> Result<()> {
-    /// let meta = op.metadata(&entry, None).await?;
-    /// // content length COULD be correct.
-    /// let _ = meta.content_length();
-    /// // etag COULD be correct.
-    /// let _ = meta.etag();
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// ## Query content length and content type
-    ///
-    /// ```
-    /// # use anyhow::Result;
-    /// # use opendal::Operator;
-    /// use opendal::Entry;
-    /// use opendal::Metakey;
-    ///
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator, entry: Entry) -> Result<()> {
-    /// let meta = op
-    ///     .metadata(&entry, Metakey::ContentLength | Metakey::ContentType)
-    ///     .await?;
-    /// // content length MUST be correct.
-    /// let _ = meta.content_length();
-    /// // etag COULD be correct.
-    /// let _ = meta.etag();
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// ## Query all metadata
-    ///
-    /// By querying metadata with `Complete`, we can make sure that we have fetched all metadata of this entry.
-    ///
-    /// ```
-    /// # use anyhow::Result;
-    /// # use opendal::Operator;
-    /// use opendal::Entry;
-    /// use opendal::Metakey;
-    ///
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator, entry: Entry) -> Result<()> {
-    /// let meta = op.metadata(&entry, Metakey::Complete).await?;
-    /// // content length MUST be correct.
-    /// let _ = meta.content_length();
-    /// // etag MUST be correct.
-    /// let _ = meta.etag();
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn metadata(
-        &self,
-        entry: &Entry,
-        flags: impl Into<FlagSet<Metakey>>,
-    ) -> Result<Metadata> {
-        // Check if cached metadata saticifies the query.
-        if let Some(meta) = entry.metadata() {
-            if meta.bit().contains(flags) || meta.bit().contains(Metakey::Complete) {
-                return Ok(meta.clone());
-            }
-        }
-
-        // Else request from backend..
-        let meta = self.stat(entry.path()).await?;
-        Ok(meta)
     }
 
     /// Check if this path exists or not.
@@ -434,7 +328,7 @@ impl Operator {
     /// # }
     /// ```
     pub async fn read(&self, path: &str) -> Result<Vec<u8>> {
-        self.range_read(path, ..).await
+        self.read_with(path).await
     }
 
     /// Read the whole path into a bytes with extra options.
@@ -451,6 +345,7 @@ impl Operator {
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
     /// let bs = op.read_with("path/to/file").await?;
+    /// let bs = op.read_with("path/to/file").range(0..10).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -468,7 +363,7 @@ impl Operator {
                             ErrorKind::IsADirectory,
                             "read path is a directory",
                         )
-                        .with_operation("range_read")
+                        .with_operation("read")
                         .with_context("service", inner.info().scheme())
                         .with_context("path", &path));
                     }
@@ -488,7 +383,7 @@ impl Operator {
                     // TODO: use native read api
                     s.read_exact(buf.initialized_mut()).await.map_err(|err| {
                         Error::new(ErrorKind::Unexpected, "read from storage")
-                            .with_operation("range_read")
+                            .with_operation("read")
                             .with_context("service", inner.info().scheme().into_static())
                             .with_context("path", &path)
                             .with_context("range", br.to_string())
@@ -508,31 +403,6 @@ impl Operator {
         fut
     }
 
-    /// Read the specified range of path into a bytes.
-    ///
-    /// This function will allocate a new bytes internally. For more precise memory control or
-    /// reading data lazily, please use [`Operator::range_reader`]
-    ///
-    /// # Notes
-    ///
-    /// - The returning content's length may be smaller than the range specified.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::io::Result;
-    /// # use opendal::Operator;
-    /// # use futures::TryStreamExt;
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator) -> Result<()> {
-    /// let bs = op.range_read("path/to/file", 1024..2048).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn range_read(&self, path: &str, range: impl RangeBounds<u64>) -> Result<Vec<u8>> {
-        self.read_with(path).range(range).await
-    }
-
     /// Create a new reader which can read the whole path.
     ///
     /// # Examples
@@ -550,28 +420,6 @@ impl Operator {
     /// ```
     pub async fn reader(&self, path: &str) -> Result<Reader> {
         self.reader_with(path).await
-    }
-
-    /// Create a new reader which can read the specified range.
-    ///
-    /// # Notes
-    ///
-    /// - The returning content's length may be smaller than the range specified.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use std::io::Result;
-    /// # use opendal::Operator;
-    /// # use futures::TryStreamExt;
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator) -> Result<()> {
-    /// let r = op.range_reader("path/to/file", 1024..2048).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn range_reader(&self, path: &str, range: impl RangeBounds<u64>) -> Result<Reader> {
-        self.reader_with(path).range(range).await
     }
 
     /// Create a new reader with extra options
@@ -603,12 +451,12 @@ impl Operator {
                             ErrorKind::IsADirectory,
                             "read path is a directory",
                         )
-                        .with_operation("Operator::range_reader")
+                        .with_operation("Operator::reader")
                         .with_context("service", inner.info().scheme())
                         .with_context("path", path));
                     }
 
-                    Reader::create_dir(inner.clone(), &path, args).await
+                    Reader::create(inner.clone(), &path, args).await
                 };
 
                 Box::pin(fut)
@@ -641,32 +489,6 @@ impl Operator {
     pub async fn write(&self, path: &str, bs: impl Into<Bytes>) -> Result<()> {
         let bs = bs.into();
         self.write_with(path, bs).await
-    }
-
-    /// Append bytes into path.
-    ///
-    /// # Notes
-    ///
-    /// - Append will make sure all bytes has been written, or an error will be returned.
-    /// - Append will create the file if it does not exist.
-    /// - Append always write bytes to the end of the file.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::io::Result;
-    /// # use opendal::Operator;
-    /// use bytes::Bytes;
-    ///
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator) -> Result<()> {
-    /// op.append("path/to/file", vec![0; 4096]).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn append(&self, path: &str, bs: impl Into<Bytes>) -> Result<()> {
-        let bs = bs.into();
-        self.append_with(path, bs).await
     }
 
     /// Copy a file from `from` to `to`.
@@ -895,8 +717,8 @@ impl Operator {
         let fut = FutureWrite(OperatorFuture::new(
             self.inner().clone(),
             path,
-            (OpWrite::default().with_content_length(bs.len() as u64), bs),
-            |inner, path, (args, bs)| {
+            (OpWrite::default(), bs),
+            |inner, path, (args, mut bs)| {
                 let fut = async move {
                     if !validate_path(&path, EntryMode::FILE) {
                         return Err(Error::new(
@@ -909,7 +731,11 @@ impl Operator {
                     }
 
                     let (_, mut w) = inner.write(&path, args).await?;
-                    w.write(bs).await?;
+                    while bs.remaining() > 0 {
+                        let n = w.write(&bs).await?;
+                        bs.advance(n);
+                    }
+
                     w.close().await?;
 
                     Ok(())
@@ -917,140 +743,6 @@ impl Operator {
                 Box::pin(fut)
             },
         ));
-        fut
-    }
-
-    /// Append multiple bytes into path.
-    ///
-    /// Refer to [`Appender`] for more details.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::io::Result;
-    /// # use opendal::Operator;
-    /// use bytes::Bytes;
-    ///
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut a = op.appender("path/to/file").await?;
-    /// a.append(vec![0; 4096]).await?;
-    /// a.append(vec![1; 4096]).await?;
-    /// a.close().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn appender(&self, path: &str) -> Result<Appender> {
-        self.appender_with(path).await
-    }
-
-    /// Append multiple bytes into path with extra options.
-    ///
-    /// Refer to [`Appender`] for more details.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::io::Result;
-    /// # use opendal::Operator;
-    /// use bytes::Bytes;
-    ///
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut a = op
-    ///     .appender_with("path/to/file")
-    ///     .content_type("application/octet-stream")
-    ///     .await?;
-    /// a.append(vec![0; 4096]).await?;
-    /// a.append(vec![1; 4096]).await?;
-    /// a.close().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn appender_with(&self, path: &str) -> FutureAppender {
-        let path = normalize_path(path);
-
-        let fut = FutureAppender(OperatorFuture::new(
-            self.inner().clone(),
-            path,
-            OpAppend::default(),
-            |inner, path, args| {
-                let fut = async move {
-                    if !validate_path(&path, EntryMode::FILE) {
-                        return Err(Error::new(
-                            ErrorKind::IsADirectory,
-                            "append path is a directory",
-                        )
-                        .with_operation("Operator::appender")
-                        .with_context("service", inner.info().scheme().into_static())
-                        .with_context("path", &path));
-                    }
-                    let ap = Appender::create(inner, &path, args).await?;
-                    Ok(ap)
-                };
-
-                Box::pin(fut)
-            },
-        ));
-
-        fut
-    }
-
-    /// Append bytes with extra options.
-    ///
-    /// # Notes
-    ///
-    /// - Append will make sure all bytes has been written, or an error will be returned.
-    /// - Append will create the file if it does not exist.
-    /// - Append always write bytes to the end of the file.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::io::Result;
-    /// # use opendal::Operator;
-    /// use bytes::Bytes;
-    ///
-    /// # #[tokio::main]
-    /// # async fn test(op: Operator) -> Result<()> {
-    /// let bs = b"hello, world!".to_vec();
-    /// let _ = op
-    ///     .append_with("path/to/file", bs)
-    ///     .content_type("text/plain")
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn append_with(&self, path: &str, bs: impl Into<Bytes>) -> FutureAppend {
-        let path = normalize_path(path);
-        let bs = bs.into();
-
-        let fut = FutureAppend(OperatorFuture::new(
-            self.inner().clone(),
-            path,
-            (OpAppend::default(), bs),
-            |inner, path, (args, bs)| {
-                let fut = async move {
-                    if !validate_path(&path, EntryMode::FILE) {
-                        return Err(Error::new(
-                            ErrorKind::IsADirectory,
-                            "append path is a directory",
-                        )
-                        .with_operation("Operator::append_with")
-                        .with_context("service", inner.info().scheme().into_static())
-                        .with_context("path", &path));
-                    }
-                    let (_, mut a) = inner.append(&path, args).await?;
-                    a.append(bs).await?;
-                    a.close().await?;
-
-                    Ok(())
-                };
-
-                Box::pin(fut)
-            },
-        ));
-
         fut
     }
 
@@ -1166,7 +858,7 @@ impl Operator {
     /// # }
     /// ```
     pub async fn remove_via(&self, input: impl Stream<Item = String> + Unpin) -> Result<()> {
-        if self.info().can_batch() {
+        if self.info().full_capability().batch {
             let mut input = input
                 .map(|v| (v, OpDelete::default().into()))
                 .chunks(self.limit());
@@ -1232,9 +924,9 @@ impl Operator {
             return self.delete(path).await;
         }
 
-        let obs = self.scan(path).await?;
+        let obs = self.lister_with(path).delimiter("").await?;
 
-        if self.info().can_batch() {
+        if self.info().full_capability().batch {
             let mut obs = obs.try_chunks(self.limit());
 
             while let Some(batches) = obs.next().await {
@@ -1266,32 +958,47 @@ impl Operator {
         Ok(())
     }
 
-    /// List given path.
+    /// List entries within a given directory.
     ///
-    /// This function will create a new handle to list entries.
+    /// # Notes
     ///
-    /// An error will be returned if given path doesn't end with `/`.
+    /// ## Listing recursively
+    ///
+    /// This function only read the children of the given directory. To read
+    /// all entries recursively, use `Operator::list_with("path").delimiter("")`
+    /// instead.
+    ///
+    /// ## Streaming
+    ///
+    /// This function will read all entries in the given directory. It could
+    /// take very long time and consume a lot of memory if the directory
+    /// contains a lot of entries.
+    ///
+    /// In order to avoid this, you can use [`Operator::lister`] to list entries in
+    /// a streaming way.
+    ///
+    /// ## Metadata
+    ///
+    /// The only metadata that is guaranteed to be available is the `Mode`.
+    /// For fetching more metadata, please use [`Operator::list_with`] and `metakey`.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use anyhow::Result;
-    /// # use futures::io;
-    /// use futures::TryStreamExt;
     /// use opendal::EntryMode;
     /// use opendal::Metakey;
     /// use opendal::Operator;
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut ds = op.list("path/to/dir/").await?;
-    /// while let Some(mut de) = ds.try_next().await? {
-    ///     let meta = op.metadata(&de, Metakey::Mode).await?;
-    ///     match meta.mode() {
+    /// let mut entries = op.list("path/to/dir/").await?;
+    /// for entry in entries {
+    ///     match entry.metadata().mode() {
     ///         EntryMode::FILE => {
     ///             println!("Handling file")
     ///         }
     ///         EntryMode::DIR => {
-    ///             println!("Handling dir like start a new list via meta.path()")
+    ///             println!("Handling dir {}", entry.path())
     ///         }
     ///         EntryMode::Unknown => continue,
     ///     }
@@ -1299,37 +1006,44 @@ impl Operator {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list(&self, path: &str) -> Result<Lister> {
-        self.list_with(path).await
+    pub async fn list(&self, path: &str) -> Result<Vec<Entry>> {
+        self.lister_with(path).await?.try_collect().await
     }
 
-    /// List given path with OpList.
+    /// List entries within a given directory with options.
     ///
-    /// This function will create a new handle to list entries.
+    /// # Notes
     ///
-    /// An error will be returned if given path doesn't end with `/`.
+    /// ## For streaming
+    ///
+    /// This function will read all entries in the given directory. It could
+    /// take very long time and consume a lot of memory if the directory
+    /// contains a lot of entries.
+    ///
+    /// In order to avoid this, you can use [`Operator::lister`] to list entries in
+    /// a streaming way.
+    ///
+    /// ## Metadata
+    ///
+    /// The only metadata that is guaranteed to be available is the `Mode`.
+    /// For fetching more metadata, please specify the `metakey`.
     ///
     /// # Examples
     ///
-    /// ## List current dir
+    /// ## List entries with prefix
+    ///
+    /// This function can also be used to list entries in recursive way.
     ///
     /// ```no_run
     /// # use anyhow::Result;
-    /// # use futures::io;
-    /// use futures::TryStreamExt;
     /// use opendal::EntryMode;
     /// use opendal::Metakey;
     /// use opendal::Operator;
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut ds = op
-    ///     .list_with("path/to/dir/")
-    ///     .limit(10)
-    ///     .start_after("start")
-    ///     .await?;
-    /// while let Some(mut de) = ds.try_next().await? {
-    ///     let meta = op.metadata(&de, Metakey::Mode).await?;
-    ///     match meta.mode() {
+    /// let mut entries = op.list_with("prefix/").delimiter("").await?;
+    /// for entry in entries {
+    ///     match entry.metadata().mode() {
     ///         EntryMode::FILE => {
     ///             println!("Handling file")
     ///         }
@@ -1343,28 +1057,31 @@ impl Operator {
     /// # }
     /// ```
     ///
-    /// ## List all files recursively
-    ///
-    /// We can use `op.scan()` as a shorter alias.
+    /// ## List entries with metakey for more metadata
     ///
     /// ```no_run
     /// # use anyhow::Result;
-    /// # use futures::io;
-    /// use futures::TryStreamExt;
     /// use opendal::EntryMode;
     /// use opendal::Metakey;
     /// use opendal::Operator;
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut ds = op.list_with("path/to/dir/").delimiter("").await?;
-    /// while let Some(mut de) = ds.try_next().await? {
-    ///     let meta = op.metadata(&de, Metakey::Mode).await?;
+    /// let mut entries = op
+    ///     .list_with("dir/")
+    ///     .metakey(Metakey::ContentLength | Metakey::LastModified)
+    ///     .await?;
+    /// for entry in entries {
+    ///     let meta = entry.metadata();
     ///     match meta.mode() {
     ///         EntryMode::FILE => {
-    ///             println!("Handling file")
+    ///             println!(
+    ///                 "Handling file {} with size {}",
+    ///                 entry.path(),
+    ///                 meta.content_length()
+    ///             )
     ///         }
     ///         EntryMode::DIR => {
-    ///             println!("Handling dir like start a new list via meta.path()")
+    ///             println!("Handling dir {}", entry.path())
     ///         }
     ///         EntryMode::Unknown => continue,
     ///     }
@@ -1391,9 +1108,9 @@ impl Operator {
                         .with_context("path", &path));
                     }
 
-                    let (_, pager) = inner.list(&path, args).await?;
+                    let lister = Lister::create(inner, &path, args).await?;
 
-                    Ok(Lister::new(pager))
+                    lister.try_collect().await
                 };
                 Box::pin(fut)
             },
@@ -1401,16 +1118,24 @@ impl Operator {
         fut
     }
 
-    /// List dir in flat way.
+    /// List entries within a given directory as a stream.
     ///
-    /// Also, this function can be used to list a prefix.
+    /// This function will create a new handle to list entries.
     ///
     /// An error will be returned if given path doesn't end with `/`.
     ///
     /// # Notes
     ///
-    /// - `scan` will not return the prefix itself.
-    /// - `scan` is an alias of `list_with(path).delimiter("")`
+    /// ## Listing recursively
+    ///
+    /// This function only read the children of the given directory. To read
+    /// all entries recursively, use [`Operator::lister_with`] and `delimiter("")`
+    /// instead.
+    ///
+    /// ## Metadata
+    ///
+    /// The only metadata that is guaranteed to be available is the `Mode`.
+    /// For fetching more metadata, please use [`Operator::lister_with`] and `metakey`.
     ///
     /// # Examples
     ///
@@ -1421,13 +1146,11 @@ impl Operator {
     /// use opendal::EntryMode;
     /// use opendal::Metakey;
     /// use opendal::Operator;
-    /// #
     /// # #[tokio::main]
     /// # async fn test(op: Operator) -> Result<()> {
-    /// let mut ds = op.scan("/path/to/dir/").await?;
+    /// let mut ds = op.lister("path/to/dir/").await?;
     /// while let Some(mut de) = ds.try_next().await? {
-    ///     let meta = op.metadata(&de, Metakey::Mode).await?;
-    ///     match meta.mode() {
+    ///     match de.metadata().mode() {
     ///         EntryMode::FILE => {
     ///             println!("Handling file")
     ///         }
@@ -1440,10 +1163,138 @@ impl Operator {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn scan(&self, path: &str) -> Result<Lister> {
-        self.list_with(path).delimiter("").await
+    pub async fn lister(&self, path: &str) -> Result<Lister> {
+        self.lister_with(path).await
+    }
+
+    /// List entries within a given directory as a stream with options.
+    ///
+    /// This function will create a new handle to list entries.
+    ///
+    /// An error will be returned if given path doesn't end with `/`.
+    ///
+    /// # Examples
+    ///
+    /// ## List current dir
+    ///
+    /// ```no_run
+    /// # use anyhow::Result;
+    /// # use futures::io;
+    /// use futures::TryStreamExt;
+    /// use opendal::EntryMode;
+    /// use opendal::Metakey;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut ds = op
+    ///     .lister_with("path/to/dir/")
+    ///     .limit(10)
+    ///     .start_after("start")
+    ///     .await?;
+    /// while let Some(mut entry) = ds.try_next().await? {
+    ///     match entry.metadata().mode() {
+    ///         EntryMode::FILE => {
+    ///             println!("Handling file {}", entry.path())
+    ///         }
+    ///         EntryMode::DIR => {
+    ///             println!("Handling dir {}", entry.path())
+    ///         }
+    ///         EntryMode::Unknown => continue,
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## List all files recursively
+    ///
+    /// ```no_run
+    /// # use anyhow::Result;
+    /// # use futures::io;
+    /// use futures::TryStreamExt;
+    /// use opendal::EntryMode;
+    /// use opendal::Metakey;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut ds = op.lister_with("path/to/dir/").delimiter("").await?;
+    /// while let Some(mut entry) = ds.try_next().await? {
+    ///     match entry.metadata().mode() {
+    ///         EntryMode::FILE => {
+    ///             println!("Handling file {}", entry.path())
+    ///         }
+    ///         EntryMode::DIR => {
+    ///             println!("Handling dir {}", entry.path())
+    ///         }
+    ///         EntryMode::Unknown => continue,
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// ## List files with required metadata
+    ///
+    /// ```no_run
+    /// # use anyhow::Result;
+    /// # use futures::io;
+    /// use futures::TryStreamExt;
+    /// use opendal::EntryMode;
+    /// use opendal::Metakey;
+    /// use opendal::Operator;
+    /// # #[tokio::main]
+    /// # async fn test(op: Operator) -> Result<()> {
+    /// let mut ds = op
+    ///     .lister_with("path/to/dir/")
+    ///     .metakey(Metakey::ContentLength | Metakey::LastModified)
+    ///     .await?;
+    /// while let Some(mut entry) = ds.try_next().await? {
+    ///     let meta = entry.metadata();
+    ///     match meta.mode() {
+    ///         EntryMode::FILE => {
+    ///             println!(
+    ///                 "Handling file {} with size {}",
+    ///                 entry.path(),
+    ///                 meta.content_length()
+    ///             )
+    ///         }
+    ///         EntryMode::DIR => {
+    ///             println!("Handling dir {}", entry.path())
+    ///         }
+    ///         EntryMode::Unknown => continue,
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn lister_with(&self, path: &str) -> FutureLister {
+        let path = normalize_path(path);
+
+        let fut = FutureLister(OperatorFuture::new(
+            self.inner().clone(),
+            path,
+            OpList::default(),
+            |inner, path, args| {
+                let fut = async move {
+                    if !validate_path(&path, EntryMode::DIR) {
+                        return Err(Error::new(
+                            ErrorKind::NotADirectory,
+                            "the path trying to list should end with `/`",
+                        )
+                        .with_operation("Operator::list")
+                        .with_context("service", inner.info().scheme().into_static())
+                        .with_context("path", &path));
+                    }
+
+                    Lister::create(inner, &path, args).await
+                };
+                Box::pin(fut)
+            },
+        ));
+        fut
     }
 }
+
 /// Operator presign API.
 impl Operator {
     /// Presign an operation for stat(head).
@@ -1511,7 +1362,7 @@ impl Operator {
         Ok(rp.into_presigned_request())
     }
 
-    /// Presign an operation for read option described in OpenDAL [rfc-1735](../../docs/rfcs/1735_operation_extension.md).
+    /// Presign an operation for read option described in OpenDAL [RFC-1735][`crate::docs::rfcs::rfc_1735_operation_extension`].
     ///
     /// You can pass `OpRead` to this method to specify the content disposition.
     ///
@@ -1581,7 +1432,7 @@ impl Operator {
         self.presign_write_with(path, expire).await
     }
 
-    /// Presign an operation for write with option described in OpenDAL [rfc-0661](../../docs/rfcs/0661-path-in-accessor.md)
+    /// Presign an operation for write with option described in OpenDAL [RFC-0661][`crate::docs::rfcs::rfc_0661_path_in_accessor`]
     ///
     /// You can pass `OpWrite` to this method to specify the content length and content type.
     ///

@@ -21,7 +21,10 @@
 
 use std::time::Duration;
 
+use flagset::FlagSet;
+
 use crate::raw::*;
+use crate::Metakey;
 
 /// Args for `create` operation.
 ///
@@ -77,6 +80,8 @@ pub struct OpList {
 
     /// The delimiter used to for the list operation. Default to be `/`
     delimiter: String,
+
+    metakey: FlagSet<Metakey>,
 }
 
 impl Default for OpList {
@@ -85,6 +90,8 @@ impl Default for OpList {
             limit: None,
             start_after: None,
             delimiter: "/".to_string(),
+            // By default, we want to know what's the mode of this entry.
+            metakey: Metakey::Mode.into(),
         }
     }
 }
@@ -126,6 +133,19 @@ impl OpList {
     /// Get the current delimiter.
     pub fn delimiter(&self) -> &str {
         &self.delimiter
+    }
+
+    /// Change the metakey of this list operation.
+    ///
+    /// The default metakey is `Metakey::Mode`.
+    pub fn with_metakey(mut self, metakey: impl Into<FlagSet<Metakey>>) -> Self {
+        self.metakey = metakey.into();
+        self
+    }
+
+    /// Get the current metakey.
+    pub fn metakey(&self) -> FlagSet<Metakey> {
+        self.metakey
     }
 }
 
@@ -242,6 +262,7 @@ pub struct OpRead {
     br: BytesRange,
     if_match: Option<String>,
     if_none_match: Option<String>,
+    override_content_type: Option<String>,
     override_cache_control: Option<String>,
     override_content_disposition: Option<String>,
     version: Option<String>,
@@ -285,6 +306,17 @@ impl OpRead {
     /// Returns the cache-control header that should be send back by the remote read operation.
     pub fn override_cache_control(&self) -> Option<&str> {
         self.override_cache_control.as_deref()
+    }
+
+    /// Sets the content-type header that should be send back by the remote read operation.
+    pub fn with_override_content_type(mut self, content_type: &str) -> Self {
+        self.override_content_type = Some(content_type.into());
+        self
+    }
+
+    /// Returns the content-type header that should be send back by the remote read operation.
+    pub fn override_content_type(&self) -> Option<&str> {
+        self.override_content_type.as_deref()
     }
 
     /// Set the If-Match of the option
@@ -372,7 +404,9 @@ impl OpStat {
 /// Args for `write` operation.
 #[derive(Debug, Clone, Default)]
 pub struct OpWrite {
-    content_length: Option<u64>,
+    append: bool,
+    buffer: Option<usize>,
+
     content_type: Option<String>,
     content_disposition: Option<String>,
     cache_control: Option<String>,
@@ -386,19 +420,42 @@ impl OpWrite {
         Self::default()
     }
 
-    /// Get the content length from op.
+    /// Get the append from op.
     ///
-    /// The content length is the total length of the data to be written.
-    pub fn content_length(&self) -> Option<u64> {
-        self.content_length
+    /// The append is the flag to indicate that this write operation is an append operation.
+    pub fn append(&self) -> bool {
+        self.append
     }
 
-    /// Set the content length of op.
+    /// Set the append mode of op.
     ///
-    /// If the content length is not set, the content length will be
-    /// calculated automatically by buffering part of data.
-    pub fn with_content_length(mut self, content_length: u64) -> Self {
-        self.content_length = Some(content_length);
+    /// If the append mode is set, the data will be appended to the end of the file.
+    ///
+    /// # Notes
+    ///
+    /// Service could return `Unsupported` if the underlying storage does not support append.
+    pub fn with_append(mut self, append: bool) -> Self {
+        self.append = append;
+        self
+    }
+
+    /// Get the buffer from op.
+    ///
+    /// The buffer is used by service to decide the buffer size of the underlying writer.
+    pub fn buffer(&self) -> Option<usize> {
+        self.buffer
+    }
+
+    /// Set the buffer of op.
+    ///
+    /// If buffer is set, the data will be buffered by the underlying writer.
+    ///
+    /// ## NOTE
+    ///
+    /// Service could have their own minimum buffer size while perform write operations like
+    /// multipart uploads. So the buffer size may be larger than the given buffer size.
+    pub fn with_buffer(mut self, buffer: usize) -> Self {
+        self.buffer = Some(buffer);
         self
     }
 
@@ -430,54 +487,6 @@ impl OpWrite {
     }
 
     /// Set the content type of option
-    pub fn with_cache_control(mut self, cache_control: &str) -> Self {
-        self.cache_control = Some(cache_control.to_string());
-        self
-    }
-}
-
-/// Args for `append` operation.
-#[derive(Debug, Clone, Default)]
-pub struct OpAppend {
-    content_type: Option<String>,
-    content_disposition: Option<String>,
-    cache_control: Option<String>,
-}
-
-impl OpAppend {
-    /// Create a new `OpAppend`.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Get the content type from option
-    pub fn content_type(&self) -> Option<&str> {
-        self.content_type.as_deref()
-    }
-
-    /// Set the content type of option
-    pub fn with_content_type(mut self, content_type: &str) -> Self {
-        self.content_type = Some(content_type.to_string());
-        self
-    }
-
-    /// Get the content disposition from option
-    pub fn content_disposition(&self) -> Option<&str> {
-        self.content_disposition.as_deref()
-    }
-
-    /// Set the content disposition of option
-    pub fn with_content_disposition(mut self, content_disposition: &str) -> Self {
-        self.content_disposition = Some(content_disposition.to_string());
-        self
-    }
-
-    /// Get the cache control from option
-    pub fn cache_control(&self) -> Option<&str> {
-        self.cache_control.as_deref()
-    }
-
-    /// Set the cache control of option
     pub fn with_cache_control(mut self, cache_control: &str) -> Self {
         self.cache_control = Some(cache_control.to_string());
         self
