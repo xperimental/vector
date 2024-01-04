@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.67.0"
 name = "ratatui"
-version = "0.23.0"
+version = "0.24.0"
 authors = [
     "Florian Dehau <work@fdehau.com>",
     "The Ratatui Developers",
@@ -83,6 +83,11 @@ doc-scrape-examples = false
 required-features = ["crossterm"]
 
 [[example]]
+name = "colors_rgb"
+doc-scrape-examples = true
+required-features = ["crossterm"]
+
+[[example]]
 name = "custom_widget"
 doc-scrape-examples = true
 required-features = ["crossterm"]
@@ -90,6 +95,19 @@ required-features = ["crossterm"]
 [[example]]
 name = "demo"
 doc-scrape-examples = false
+
+[[example]]
+name = "demo2"
+doc-scrape-examples = true
+required-features = [
+    "crossterm",
+    "widget-calendar",
+]
+
+[[example]]
+name = "docsrs"
+doc-scrape-examples = false
+required-features = ["crossterm"]
 
 [[example]]
 name = "gauge"
@@ -162,7 +180,15 @@ doc-scrape-examples = true
 required-features = ["crossterm"]
 
 [[bench]]
+name = "barchart"
+harness = false
+
+[[bench]]
 name = "block"
+harness = false
+
+[[bench]]
+name = "list"
 harness = false
 
 [[bench]]
@@ -171,10 +197,6 @@ harness = false
 
 [[bench]]
 name = "sparkline"
-harness = false
-
-[[bench]]
-name = "list"
 harness = false
 
 [dependencies.bitflags]
@@ -196,6 +218,9 @@ version = "2.0"
 
 [dependencies.itertools]
 version = "0.11"
+
+[dependencies.lru]
+version = "0.12.0"
 
 [dependencies.paste]
 version = "1.0.2"
@@ -232,7 +257,10 @@ version = "0.1"
 version = "1.0.71"
 
 [dev-dependencies.argh]
-version = "0.1"
+version = "0.1.12"
+
+[dev-dependencies.better-panic]
+version = "0.3.0"
 
 [dev-dependencies.cargo-husky]
 version = "1.5.0"
@@ -240,26 +268,36 @@ features = ["user-hooks"]
 default-features = false
 
 [dev-dependencies.criterion]
-version = "0.5"
+version = "0.5.1"
 features = ["html_reports"]
 
 [dev-dependencies.fakeit]
 version = "1.1"
 
+[dev-dependencies.palette]
+version = "0.7.3"
+
 [dev-dependencies.pretty_assertions]
 version = "1.4.0"
 
 [dev-dependencies.rand]
-version = "0.8"
+version = "0.8.5"
 
 [features]
 all-widgets = ["widget-calendar"]
-default = ["crossterm"]
+crossterm = ["dep:crossterm"]
+default = [
+    "crossterm",
+    "underline-color",
+]
 macros = []
 serde = [
     "dep:serde",
     "bitflags/serde",
 ]
+termion = ["dep:termion"]
+termwiz = ["dep:termwiz"]
+underline-color = ["dep:crossterm"]
 widget-calendar = ["dep:time"]
 
 [badges]

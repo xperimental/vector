@@ -21,12 +21,13 @@ bitflags! {
             target_os = "nto",
             target_os = "openbsd",
             target_os = "redox",
+            target_os = "vita",
         )))]
         const DIRECT = bitcast!(c::O_DIRECT);
         /// `O_NONBLOCK`
         const NONBLOCK = bitcast!(c::O_NONBLOCK);
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -47,7 +48,7 @@ bitflags! {
         /// `SPLICE_F_GIFT`
         const GIFT = c::SPLICE_F_GIFT;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }

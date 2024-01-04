@@ -21,7 +21,6 @@ use ratatui::{
 
 // These type aliases are used to make the code more readable by reducing repetition of the generic
 // types. They are not necessary for the functionality of the code.
-type Frame<'a> = ratatui::Frame<'a, CrosstermBackend<Stdout>>;
 type Terminal = ratatui::Terminal<CrosstermBackend<Stdout>>;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -106,18 +105,18 @@ fn ui(frame: &mut Frame) {
 fn calculate_layout(area: Rect) -> (Rect, Vec<Vec<Rect>>) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(1), Constraint::Min(0)])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
     let title_area = layout[0];
     let main_areas = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Max(4); 9])
+        .constraints([Constraint::Max(4); 9])
         .split(layout[1])
         .iter()
         .map(|&area| {
             Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(area)
                 .to_vec()
         })

@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.64"
 name = "serde_yaml"
-version = "0.9.25"
+version = "0.9.27"
 authors = ["David Tolnay <dtolnay@gmail.com>"]
 description = "YAML data format for Serde"
 documentation = "https://docs.rs/serde_yaml/"
@@ -47,7 +47,7 @@ version = "1.0"
 version = "1.0"
 
 [dependencies.serde]
-version = "1.0.139"
+version = "1.0.190"
 
 [dependencies.unsafe-libyaml]
 version = "0.2.7"

@@ -9,9 +9,9 @@ use futures::FutureExt;
 use http::{StatusCode, Uri};
 use snafu::{ResultExt, Snafu};
 use tower::Service;
-use vector_common::sensitive_string::SensitiveString;
-use vector_config::configurable_component;
-use vector_core::event::MetricTags;
+use vector_lib::configurable::configurable_component;
+use vector_lib::event::MetricTags;
+use vector_lib::sensitive_string::SensitiveString;
 
 use crate::http::HttpClient;
 
@@ -342,7 +342,7 @@ fn encode_string(key: &str, output: &mut BytesMut) {
 
 pub(in crate::sinks) fn encode_timestamp(timestamp: Option<DateTime<Utc>>) -> i64 {
     if let Some(ts) = timestamp {
-        ts.timestamp_nanos()
+        ts.timestamp_nanos_opt().unwrap()
     } else {
         encode_timestamp(Some(Utc::now()))
     }
@@ -380,7 +380,7 @@ pub mod test_util {
     use std::{fs::File, io::Read};
 
     use chrono::{offset::TimeZone, DateTime, SecondsFormat, Timelike, Utc};
-    use vector_core::metric_tags;
+    use vector_lib::metric_tags;
 
     use super::*;
     use crate::tls;
@@ -390,7 +390,7 @@ pub mod test_util {
     pub(crate) const TOKEN: &str = "my-token";
 
     pub(crate) fn next_database() -> String {
-        format!("testdb{}", Utc::now().timestamp_nanos())
+        format!("testdb{}", Utc::now().timestamp_nanos_opt().unwrap())
     }
 
     pub(crate) fn ts() -> DateTime<Utc> {
@@ -834,7 +834,9 @@ mod tests {
 
     #[test]
     fn test_encode_timestamp() {
-        let start = Utc::now().timestamp_nanos();
+        let start = Utc::now()
+            .timestamp_nanos_opt()
+            .expect("Timestamp out of range");
         assert_eq!(encode_timestamp(Some(ts())), 1542182950000000011);
         assert!(encode_timestamp(None) >= start)
     }

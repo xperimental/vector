@@ -64,9 +64,7 @@ fn run_app<B: Backend>(
     loop {
         terminal.draw(|f| ui(f, &app))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if let KeyCode::Char('q') = key.code {
@@ -81,7 +79,7 @@ fn run_app<B: Backend>(
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+fn ui(f: &mut Frame, app: &App) {
     let size = f.size();
 
     // Words made "loooong" to demonstrate line breaking.
@@ -94,15 +92,12 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-            ]
-            .as_ref(),
-        )
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
         .split(size);
 
     let text = vec![

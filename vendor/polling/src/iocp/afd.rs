@@ -6,7 +6,8 @@ use std::cell::UnsafeCell;
 use std::fmt;
 use std::io;
 use std::marker::{PhantomData, PhantomPinned};
-use std::mem::{size_of, transmute, MaybeUninit};
+use std::mem::{self, size_of, transmute, MaybeUninit};
+use std::ops;
 use std::os::windows::prelude::{AsRawHandle, RawHandle, RawSocket};
 use std::pin::Pin;
 use std::ptr;
@@ -65,18 +66,94 @@ impl AfdPollInfo {
     }
 }
 
-bitflags::bitflags! {
-    #[derive(Default)]
-    #[repr(transparent)]
-    pub(super) struct AfdPollMask: u32 {
-        const RECEIVE = 0x001;
-        const RECEIVE_EXPEDITED = 0x002;
-        const SEND = 0x004;
-        const DISCONNECT = 0x008;
-        const ABORT = 0x010;
-        const LOCAL_CLOSE = 0x020;
-        const ACCEPT = 0x080;
-        const CONNECT_FAIL = 0x100;
+#[derive(Default, Copy, Clone, PartialEq, Eq)]
+#[repr(transparent)]
+pub(super) struct AfdPollMask(u32);
+
+impl AfdPollMask {
+    pub(crate) const RECEIVE: AfdPollMask = AfdPollMask(0x001);
+    pub(crate) const RECEIVE_EXPEDITED: AfdPollMask = AfdPollMask(0x002);
+    pub(crate) const SEND: AfdPollMask = AfdPollMask(0x004);
+    pub(crate) const DISCONNECT: AfdPollMask = AfdPollMask(0x008);
+    pub(crate) const ABORT: AfdPollMask = AfdPollMask(0x010);
+    pub(crate) const LOCAL_CLOSE: AfdPollMask = AfdPollMask(0x020);
+    pub(crate) const ACCEPT: AfdPollMask = AfdPollMask(0x080);
+    pub(crate) const CONNECT_FAIL: AfdPollMask = AfdPollMask(0x100);
+
+    /// Creates an empty mask.
+    pub(crate) const fn empty() -> AfdPollMask {
+        AfdPollMask(0)
+    }
+
+    /// Checks if this mask contains the other mask.
+    pub(crate) fn intersects(self, other: AfdPollMask) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    /// Sets a flag.
+    pub(crate) fn set(&mut self, other: AfdPollMask, value: bool) {
+        if value {
+            *self |= other;
+        } else {
+            self.0 &= !other.0;
+        }
+    }
+}
+
+impl fmt::Debug for AfdPollMask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const FLAGS: &[(&str, AfdPollMask)] = &[
+            ("RECEIVE", AfdPollMask::RECEIVE),
+            ("RECEIVE_EXPEDITED", AfdPollMask::RECEIVE_EXPEDITED),
+            ("SEND", AfdPollMask::SEND),
+            ("DISCONNECT", AfdPollMask::DISCONNECT),
+            ("ABORT", AfdPollMask::ABORT),
+            ("LOCAL_CLOSE", AfdPollMask::LOCAL_CLOSE),
+            ("ACCEPT", AfdPollMask::ACCEPT),
+            ("CONNECT_FAIL", AfdPollMask::CONNECT_FAIL),
+        ];
+
+        let mut first = true;
+        for (name, value) in FLAGS {
+            if self.intersects(*value) {
+                if !first {
+                    write!(f, " | ")?;
+                }
+
+                first = false;
+                write!(f, "{}", name)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl ops::BitOr for AfdPollMask {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        AfdPollMask(self.0 | rhs.0)
+    }
+}
+
+impl ops::BitOrAssign for AfdPollMask {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl ops::BitAnd for AfdPollMask {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self {
+        AfdPollMask(self.0 & rhs.0)
+    }
+}
+
+impl ops::BitAndAssign for AfdPollMask {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
     }
 }
 
@@ -111,7 +188,7 @@ macro_rules! define_ntdll_import {
                         let addr = match addr {
                             Some(addr) => addr,
                             None => {
-                                log::error!("Failed to load ntdll function {}", NAME);
+                                tracing::error!("Failed to load ntdll function {}", NAME);
                                 return Err(io::Error::last_os_error());
                             },
                         };
@@ -212,7 +289,7 @@ impl NtdllImports {
                 let ntdll = GetModuleHandleW(NTDLL_NAME.as_ptr() as *const _);
 
                 if ntdll == 0 {
-                    log::error!("Failed to load ntdll.dll");
+                    tracing::error!("Failed to load ntdll.dll");
                     return Err(io::Error::last_os_error());
                 }
 
@@ -302,8 +379,8 @@ where
 
         // Set up device attributes.
         let mut device_name = UNICODE_STRING {
-            Length: (AFD_NAME.len() * size_of::<u16>()) as u16,
-            MaximumLength: (AFD_NAME.len() * size_of::<u16>()) as u16,
+            Length: mem::size_of_val(AFD_NAME) as u16,
+            MaximumLength: mem::size_of_val(AFD_NAME) as u16,
             Buffer: AFD_NAME.as_ptr() as *mut _,
         };
         let mut device_attributes = OBJECT_ATTRIBUTES {
@@ -510,6 +587,9 @@ impl<T: fmt::Debug> fmt::Debug for IoStatusBlock<T> {
             .finish()
     }
 }
+
+unsafe impl<T: Send> Send for IoStatusBlock<T> {}
+unsafe impl<T: Sync> Sync for IoStatusBlock<T> {}
 
 impl<T> From<T> for IoStatusBlock<T> {
     fn from(data: T) -> Self {

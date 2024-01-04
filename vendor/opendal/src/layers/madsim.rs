@@ -149,7 +149,6 @@ impl LayeredAccessor for MadsimAccessor {
     type BlockingReader = ();
     type Writer = MadsimWriter;
     type BlockingWriter = ();
-    type Appender = ();
     type Pager = MadsimPager;
     type BlockingPager = ();
 
@@ -161,7 +160,7 @@ impl LayeredAccessor for MadsimAccessor {
         let mut info = AccessorInfo::default();
         info.set_name("madsim");
 
-        info.set_capability(Capability {
+        info.set_native_capability(Capability {
             read: true,
             write: true,
             ..Default::default()
@@ -219,17 +218,6 @@ impl LayeredAccessor for MadsimAccessor {
         {
             unreachable!("madsim is not enabled")
         }
-    }
-
-    async fn append(
-        &self,
-        path: &str,
-        args: OpAppend,
-    ) -> crate::Result<(RpAppend, Self::Appender)> {
-        Err(Error::new(
-            ErrorKind::Unsupported,
-            "will not be supported in MadsimLayer",
-        ))
     }
 
     async fn list(&self, path: &str, args: OpList) -> crate::Result<(RpList, Self::Pager)> {
@@ -314,7 +302,11 @@ pub struct MadsimWriter {
 
 #[async_trait]
 impl oio::Write for MadsimWriter {
-    async fn write(&mut self, bs: Bytes) -> crate::Result<()> {
+    fn poll_write(
+        &mut self,
+        cx: &mut Context<'_>,
+        bs: &dyn oio::WriteBuf,
+    ) -> Poll<crate::Result<usize>> {
         #[cfg(madsim)]
         {
             let req = Request::Write(self.path.to_string(), bs);
@@ -330,22 +322,15 @@ impl oio::Write for MadsimWriter {
         }
     }
 
-    async fn sink(&mut self, size: u64, s: oio::Streamer) -> crate::Result<()> {
-        Err(Error::new(
+    fn poll_abort(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
+        Poll::Ready(Err(Error::new(
             ErrorKind::Unsupported,
             "will be supported in the future",
-        ))
+        )))
     }
 
-    async fn abort(&mut self) -> crate::Result<()> {
-        Err(Error::new(
-            ErrorKind::Unsupported,
-            "will be supported in the future",
-        ))
-    }
-
-    async fn close(&mut self) -> crate::Result<()> {
-        Ok(())
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -361,10 +346,8 @@ impl oio::Page for MadsimPager {
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::new(ErrorKind::Unexpected, "madsim error")
-    }
+fn parse_io_error(e: std::io::Error) -> Error {
+    Error::new(ErrorKind::Unexpected, "madsim error")
 }
 
 /// A simulated server.This an experimental feature, docs are not ready yet.

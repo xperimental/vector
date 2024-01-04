@@ -17,7 +17,7 @@ bitflags! {
         /// `PROT_EXEC`
         const EXEC = linux_raw_sys::general::PROT_EXEC;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -56,7 +56,7 @@ bitflags! {
         #[cfg(any(target_arch = "sparc", target_arch = "sparc64"))]
         const ADI = linux_raw_sys::general::PROT_ADI;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -106,7 +106,7 @@ bitflags! {
         #[cfg(not(any(target_arch = "mips", target_arch = "mips32r6", target_arch = "mips64", target_arch = "mips64r6")))]
         const UNINITIALIZED = linux_raw_sys::general::MAP_UNINITIALIZED;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -126,7 +126,7 @@ bitflags! {
         /// `MREMAP_DONTUNMAP` (since Linux 5.7)
         const DONTUNMAP = linux_raw_sys::general::MREMAP_DONTUNMAP;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -148,7 +148,7 @@ bitflags! {
         /// written).
         const INVALIDATE = linux_raw_sys::general::MS_INVALIDATE;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -163,7 +163,7 @@ bitflags! {
         /// `MLOCK_ONFAULT`
         const ONFAULT = linux_raw_sys::general::MLOCK_ONFAULT;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -240,9 +240,9 @@ pub enum Advice {
 impl Advice {
     /// `POSIX_MADV_DONTNEED`
     ///
-    /// On Linux, this is mapped to `POSIX_MADV_NORMAL` because
-    /// Linux's `MADV_DONTNEED` differs from `POSIX_MADV_DONTNEED`. See
-    /// `LinuxDontNeed` for the Linux behavior.
+    /// On Linux, this is mapped to `POSIX_MADV_NORMAL` because Linux's
+    /// `MADV_DONTNEED` differs from `POSIX_MADV_DONTNEED`. See `LinuxDontNeed`
+    /// for the Linux behavior.
     pub const DontNeed: Self = Self::Normal;
 }
 
@@ -258,7 +258,7 @@ bitflags! {
         /// `O_NONBLOCK`
         const NONBLOCK = linux_raw_sys::general::O_NONBLOCK;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }
@@ -271,28 +271,26 @@ bitflags! {
     #[repr(transparent)]
     #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
     pub struct MlockAllFlags: u32 {
-        /// Used together with `MCL_CURRENT`, `MCL_FUTURE`, or both.  Mark
-        /// all current (with `MCL_CURRENT`) or future (with `MCL_FUTURE`)
-        /// mappings to lock pages when they are faulted in.  When
-        /// used with `MCL_CURRENT`, all present pages are locked, but
-        /// `mlockall()` will not fault in non-present pages.  When used
-        /// with `MCL_FUTURE`, all future mappings will be marked to
-        /// lock pages when they are faulted in, but they will not be
-        /// populated by the lock when the mapping is created.
-        /// `MCL_ONFAULT` must be used with either `MCL_CURRENT` or
+        /// Used together with `MCL_CURRENT`, `MCL_FUTURE`, or both. Mark all
+        /// current (with `MCL_CURRENT`) or future (with `MCL_FUTURE`) mappings
+        /// to lock pages when they are faulted in. When used with
+        /// `MCL_CURRENT`, all present pages are locked, but `mlockall` will
+        /// not fault in non-present pages. When used with `MCL_FUTURE`, all
+        /// future mappings will be marked to lock pages when they are faulted
+        /// in, but they will not be populated by the lock when the mapping is
+        /// created. `MCL_ONFAULT` must be used with either `MCL_CURRENT` or
         /// `MCL_FUTURE` or both.
         const ONFAULT = linux_raw_sys::general::MCL_ONFAULT;
-        /// Lock all pages which will become mapped into the address
-        /// space of the process in the future.  These could be, for
-        /// instance, new pages required by a growing heap and stack
-        /// as well as new memory-mapped files or shared memory
-        /// regions.
+        /// Lock all pages which will become mapped into the address space of
+        /// the process in the future. These could be, for instance, new pages
+        /// required by a growing heap and stack as well as new memory-mapped
+        /// files or shared memory regions.
         const FUTURE = linux_raw_sys::general::MCL_FUTURE;
-        /// Lock all pages which are currently mapped into the address
-        /// space of the process.
+        /// Lock all pages which are currently mapped into the address space of
+        /// the process.
         const CURRENT = linux_raw_sys::general::MCL_CURRENT;
 
-        /// <https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags>
+        /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
         const _ = !0;
     }
 }

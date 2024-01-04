@@ -94,7 +94,7 @@
 //! [I/O-safe]: https://github.com/rust-lang/rfcs/blob/master/text/3128-io-safety.md
 //! [`Result`]: https://doc.rust-lang.org/stable/std/result/enum.Result.html
 //! [`Arg`]: https://docs.rs/rustix/*/rustix/path/trait.Arg.html
-//! [support for externally defined flags]: https://docs.rs/bitflags/latest/bitflags/#externally-defined-flags
+//! [support for externally defined flags]: https://docs.rs/bitflags/*/bitflags/#externally-defined-flags
 
 #![deny(missing_docs)]
 #![allow(stable_features)]
@@ -115,13 +115,17 @@
 )]
 #![cfg_attr(asm_experimental_arch, feature(asm_experimental_arch))]
 #![cfg_attr(not(feature = "all-apis"), allow(dead_code))]
-// It is common in linux and libc APIs for types to vary between platforms.
+// It is common in Linux and libc APIs for types to vary between platforms.
 #![allow(clippy::unnecessary_cast)]
-// It is common in linux and libc APIs for types to vary between platforms.
+// It is common in Linux and libc APIs for types to vary between platforms.
 #![allow(clippy::useless_conversion)]
 // Redox and WASI have enough differences that it isn't worth precisely
-// conditionalizing all the `use`s for them.
-#![cfg_attr(any(target_os = "redox", target_os = "wasi"), allow(unused_imports))]
+// conditionalizing all the `use`s for them. Similar for if we don't have
+// "all-apis".
+#![cfg_attr(
+    any(target_os = "redox", target_os = "wasi", not(feature = "all-apis")),
+    allow(unused_imports)
+)]
 
 #[cfg(all(feature = "alloc", not(feature = "rustc-dep-of-std")))]
 extern crate alloc;
@@ -202,7 +206,7 @@ pub mod io;
 #[cfg_attr(doc_cfg, doc(cfg(feature = "io_uring")))]
 pub mod io_uring;
 pub mod ioctl;
-#[cfg(not(any(windows, target_os = "espidf", target_os = "wasi")))]
+#[cfg(not(any(windows, target_os = "espidf", target_os = "vita", target_os = "wasi")))]
 #[cfg(feature = "mm")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "mm")))]
 pub mod mm;
@@ -250,6 +254,7 @@ pub mod rand;
     windows,
     target_os = "android",
     target_os = "espidf",
+    target_os = "vita",
     target_os = "wasi"
 )))]
 #[cfg(feature = "shm")]
@@ -263,7 +268,7 @@ pub mod stdio;
 #[cfg(not(any(windows, target_os = "wasi")))]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "system")))]
 pub mod system;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "vita")))]
 #[cfg(feature = "termios")]
 #[cfg_attr(doc_cfg, doc(cfg(feature = "termios")))]
 pub mod termios;

@@ -3,8 +3,8 @@ use std::{collections::HashMap, num::ParseFloatError};
 
 use chrono::Utc;
 use indexmap::IndexMap;
-use vector_config::configurable_component;
-use vector_core::{config::LogNamespace, event::DatadogMetricOriginMetadata};
+use vector_lib::configurable::configurable_component;
+use vector_lib::{config::LogNamespace, event::DatadogMetricOriginMetadata};
 use vrl::path::parse_target_path;
 
 use crate::config::schema::Definition;
@@ -165,7 +165,7 @@ impl TransformConfig for LogToMetricConfig {
 
     fn outputs(
         &self,
-        _: enrichment::TableRegistry,
+        _: vector_lib::enrichment::TableRegistry,
         _: &[(OutputId, schema::Definition)],
         _: LogNamespace,
     ) -> Vec<TransformOutput> {
@@ -268,9 +268,11 @@ fn to_metric(config: &MetricConfig, event: &Event) -> Result<Metric, TransformEr
         .metadata()
         .clone()
         .with_schema_definition(&Arc::new(Definition::any()))
-        .with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        .with_origin_metadata(DatadogMetricOriginMetadata::new(
+            None,
+            None,
+            Some(ORIGIN_SERVICE_VALUE),
+        ));
 
     let field = parse_target_path(config.field()).map_err(|_e| FieldNotFound {
         field: config.field().to_string(),
@@ -322,7 +324,7 @@ fn to_metric(config: &MetricConfig, event: &Event) -> Result<Metric, TransformEr
             (
                 MetricKind::Incremental,
                 MetricValue::Distribution {
-                    samples: vector_core::samples![value => 1],
+                    samples: vector_lib::samples![value => 1],
                     statistic: StatisticKind::Histogram,
                 },
             )
@@ -338,7 +340,7 @@ fn to_metric(config: &MetricConfig, event: &Event) -> Result<Metric, TransformEr
             (
                 MetricKind::Incremental,
                 MetricValue::Distribution {
-                    samples: vector_core::samples![value => 1],
+                    samples: vector_lib::samples![value => 1],
                     statistic: StatisticKind::Summary,
                 },
             )
@@ -434,8 +436,8 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
-    use vector_common::config::ComponentKey;
-    use vector_core::metric_tags;
+    use vector_lib::config::ComponentKey;
+    use vector_lib::metric_tags;
 
     #[test]
     fn generate_config() {
@@ -520,9 +522,15 @@ mod tests {
         );
 
         let event = create_event("status", "42");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -557,9 +565,15 @@ mod tests {
         let mut event = create_event("message", "i am log");
         event.as_mut_log().insert("method", "post");
         event.as_mut_log().insert("code", "200");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -651,9 +665,15 @@ mod tests {
         );
 
         let event = create_event("backtrace", "message");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -701,9 +721,15 @@ mod tests {
         );
 
         let event = create_event("amount", "33.99");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -736,9 +762,15 @@ mod tests {
         );
 
         let event = create_event("amount", "33.99");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         metadata.set_source_id(Arc::new(ComponentKey::from("in")));
@@ -770,9 +802,15 @@ mod tests {
         );
 
         let event = create_event("memory_rss", "123");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -861,9 +899,15 @@ mod tests {
             .insert(log_schema().timestamp_key_target_path().unwrap(), ts());
         event.as_mut_log().insert("status", "42");
         event.as_mut_log().insert("backtrace", "message");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -921,9 +965,15 @@ mod tests {
         event.as_mut_log().insert("host", "local");
         event.as_mut_log().insert("worker", "abc");
         event.as_mut_log().insert("service", "xyz");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -970,9 +1020,15 @@ mod tests {
         );
 
         let event = create_event("user_ip", "1.2.3.4");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
         metadata.set_upstream_id(Arc::new(OutputId::from("transform")));
@@ -1005,9 +1061,15 @@ mod tests {
         );
 
         let event = create_event("response_time", "2.5");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -1022,7 +1084,7 @@ mod tests {
                 "response_time",
                 MetricKind::Incremental,
                 MetricValue::Distribution {
-                    samples: vector_core::samples![2.5 => 1],
+                    samples: vector_lib::samples![2.5 => 1],
                     statistic: StatisticKind::Histogram
                 },
                 metadata
@@ -1042,9 +1104,15 @@ mod tests {
         );
 
         let event = create_event("response_time", "2.5");
-        let mut metadata = event.metadata().clone().with_origin_metadata(
-            DatadogMetricOriginMetadata::default().with_service(ORIGIN_SERVICE_VALUE),
-        );
+        let mut metadata =
+            event
+                .metadata()
+                .clone()
+                .with_origin_metadata(DatadogMetricOriginMetadata::new(
+                    None,
+                    None,
+                    Some(ORIGIN_SERVICE_VALUE),
+                ));
 
         // definitions aren't valid for metrics yet, it's just set to the default (anything).
         metadata.set_schema_definition(&Arc::new(Definition::any()));
@@ -1059,7 +1127,7 @@ mod tests {
                 "response_time",
                 MetricKind::Incremental,
                 MetricValue::Distribution {
-                    samples: vector_core::samples![2.5 => 1],
+                    samples: vector_lib::samples![2.5 => 1],
                     statistic: StatisticKind::Summary
                 },
                 metadata

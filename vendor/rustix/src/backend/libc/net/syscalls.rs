@@ -9,7 +9,13 @@ use crate::io;
 use crate::net::{SocketAddrAny, SocketAddrV4, SocketAddrV6};
 use crate::utils::as_ptr;
 use core::mem::{size_of, MaybeUninit};
-#[cfg(not(any(windows, target_os = "espidf", target_os = "redox", target_os = "wasi")))]
+#[cfg(not(any(
+    windows,
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 use {
     super::msghdr::{with_noaddr_msghdr, with_recv_msghdr, with_v4_msghdr, with_v6_msghdr},
     crate::io::{IoSlice, IoSliceMut},
@@ -243,6 +249,19 @@ pub(crate) fn connect_unix(sockfd: BorrowedFd<'_>, addr: &SocketAddrUnix) -> io:
 }
 
 #[cfg(not(any(target_os = "redox", target_os = "wasi")))]
+pub(crate) fn connect_unspec(sockfd: BorrowedFd<'_>) -> io::Result<()> {
+    debug_assert_eq!(c::AF_UNSPEC, 0);
+    let addr = MaybeUninit::<c::sockaddr_storage>::zeroed();
+    unsafe {
+        ret(c::connect(
+            borrowed_fd(sockfd),
+            as_ptr(&addr).cast(),
+            size_of::<c::sockaddr_storage>() as c::socklen_t,
+        ))
+    }
+}
+
+#[cfg(not(any(target_os = "redox", target_os = "wasi")))]
 pub(crate) fn listen(sockfd: BorrowedFd<'_>, backlog: c::c_int) -> io::Result<()> {
     unsafe { ret(c::listen(borrowed_fd(sockfd), backlog)) }
 }
@@ -255,7 +274,13 @@ pub(crate) fn accept(sockfd: BorrowedFd<'_>) -> io::Result<OwnedFd> {
     }
 }
 
-#[cfg(not(any(windows, target_os = "espidf", target_os = "redox", target_os = "wasi")))]
+#[cfg(not(any(
+    windows,
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 pub(crate) fn recvmsg(
     sockfd: BorrowedFd<'_>,
     iov: &mut [IoSliceMut<'_>],
@@ -287,7 +312,13 @@ pub(crate) fn recvmsg(
     })
 }
 
-#[cfg(not(any(windows, target_os = "espidf", target_os = "redox", target_os = "wasi")))]
+#[cfg(not(any(
+    windows,
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 pub(crate) fn sendmsg(
     sockfd: BorrowedFd<'_>,
     iov: &[IoSlice<'_>],
@@ -303,7 +334,13 @@ pub(crate) fn sendmsg(
     })
 }
 
-#[cfg(not(any(windows, target_os = "espidf", target_os = "redox", target_os = "wasi")))]
+#[cfg(not(any(
+    windows,
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 pub(crate) fn sendmsg_v4(
     sockfd: BorrowedFd<'_>,
     addr: &SocketAddrV4,
@@ -320,7 +357,13 @@ pub(crate) fn sendmsg_v4(
     })
 }
 
-#[cfg(not(any(windows, target_os = "espidf", target_os = "redox", target_os = "wasi")))]
+#[cfg(not(any(
+    windows,
+    target_os = "espidf",
+    target_os = "redox",
+    target_os = "vita",
+    target_os = "wasi"
+)))]
 pub(crate) fn sendmsg_v6(
     sockfd: BorrowedFd<'_>,
     addr: &SocketAddrV6,
@@ -337,7 +380,10 @@ pub(crate) fn sendmsg_v6(
     })
 }
 
-#[cfg(all(unix, not(any(target_os = "espidf", target_os = "redox"))))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "espidf", target_os = "redox", target_os = "vita"))
+))]
 pub(crate) fn sendmsg_unix(
     sockfd: BorrowedFd<'_>,
     addr: &SocketAddrUnix,
@@ -362,6 +408,7 @@ pub(crate) fn sendmsg_unix(
     target_os = "haiku",
     target_os = "redox",
     target_os = "nto",
+    target_os = "vita",
     target_os = "wasi",
 )))]
 pub(crate) fn accept_with(sockfd: BorrowedFd<'_>, flags: SocketFlags) -> io::Result<OwnedFd> {
@@ -401,6 +448,7 @@ pub(crate) fn acceptfrom(sockfd: BorrowedFd<'_>) -> io::Result<(OwnedFd, Option<
     target_os = "haiku",
     target_os = "nto",
     target_os = "redox",
+    target_os = "vita",
     target_os = "wasi",
 )))]
 pub(crate) fn acceptfrom_with(
@@ -431,7 +479,8 @@ pub(crate) fn acceptfrom_with(
     target_os = "aix",
     target_os = "espidf",
     target_os = "haiku",
-    target_os = "nto"
+    target_os = "nto",
+    target_os = "vita",
 ))]
 pub(crate) fn accept_with(sockfd: BorrowedFd<'_>, _flags: SocketFlags) -> io::Result<OwnedFd> {
     accept(sockfd)
@@ -445,7 +494,8 @@ pub(crate) fn accept_with(sockfd: BorrowedFd<'_>, _flags: SocketFlags) -> io::Re
     target_os = "aix",
     target_os = "espidf",
     target_os = "haiku",
-    target_os = "nto"
+    target_os = "nto",
+    target_os = "vita",
 ))]
 pub(crate) fn acceptfrom_with(
     sockfd: BorrowedFd<'_>,

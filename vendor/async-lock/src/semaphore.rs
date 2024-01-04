@@ -1,11 +1,13 @@
-use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use core::fmt;
+use core::future::Future;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::task::{Context, Poll};
+
+use alloc::sync::Arc;
 
 use event_listener::{Event, EventListener};
+use event_listener_strategy::{easy_wrapper, EventListenerFuture, Strategy};
 
 /// A counter for limiting the number of concurrent operations.
 #[derive(Debug)]
@@ -84,10 +86,37 @@ impl Semaphore {
     /// # });
     /// ```
     pub fn acquire(&self) -> Acquire<'_> {
-        Acquire {
+        Acquire::_new(AcquireInner {
             semaphore: self,
-            listener: None,
-        }
+            listener: EventListener::new(&self.event),
+        })
+    }
+
+    /// Waits for a permit for a concurrent operation.
+    ///
+    /// Returns a guard that releases the permit when dropped.
+    ///
+    /// # Blocking
+    ///
+    /// Rather than using asynchronous waiting, like the [`acquire`] method, this method will
+    /// block the current thread until the permit is acquired.
+    ///
+    /// This method should not be used in an asynchronous context. It is intended to be
+    /// used in a way that a semaphore can be used in both asynchronous and synchronous contexts.
+    /// Calling this method in an asynchronous context may result in a deadlock.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_lock::Semaphore;
+    ///
+    /// let s = Semaphore::new(2);
+    /// let guard = s.acquire_blocking();
+    /// ```
+    #[cfg(all(feature = "std", not(target_family = "wasm")))]
+    #[inline]
+    pub fn acquire_blocking(&self) -> SemaphoreGuard<'_> {
+        self.acquire().wait()
     }
 
     /// Attempts to get an owned permit for a concurrent operation.
@@ -147,7 +176,7 @@ impl Semaphore {
     pub fn acquire_arc(self: &Arc<Self>) -> AcquireArc {
         AcquireArc {
             semaphore: self.clone(),
-            listener: None,
+            listener: EventListener::new(&self.event),
         }
     }
 
@@ -176,42 +205,49 @@ impl Semaphore {
     }
 }
 
-/// The future returned by [`Semaphore::acquire`].
-pub struct Acquire<'a> {
-    /// The semaphore being acquired.
-    semaphore: &'a Semaphore,
-
-    /// The listener waiting on the semaphore.
-    listener: Option<EventListener>,
+easy_wrapper! {
+    /// The future returned by [`Semaphore::acquire`].
+    pub struct Acquire<'a>(AcquireInner<'a> => SemaphoreGuard<'a>);
+    #[cfg(all(feature = "std", not(target_family = "wasm")))]
+    pub(crate) wait();
 }
 
-impl fmt::Debug for Acquire<'_> {
+pin_project_lite::pin_project! {
+    struct AcquireInner<'a> {
+        // The semaphore being acquired.
+        semaphore: &'a Semaphore,
+
+        // The listener waiting on the semaphore.
+        #[pin]
+        listener: EventListener,
+    }
+}
+
+impl fmt::Debug for AcquireInner<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Acquire { .. }")
     }
 }
 
-impl Unpin for Acquire<'_> {}
-
-impl<'a> Future for Acquire<'a> {
+impl<'a> EventListenerFuture for AcquireInner<'a> {
     type Output = SemaphoreGuard<'a>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
+    fn poll_with_strategy<'x, S: Strategy<'x>>(
+        self: Pin<&mut Self>,
+        strategy: &mut S,
+        cx: &mut S::Context,
+    ) -> Poll<Self::Output> {
+        let mut this = self.project();
 
         loop {
             match this.semaphore.try_acquire() {
                 Some(guard) => return Poll::Ready(guard),
                 None => {
                     // Wait on the listener.
-                    match &mut this.listener {
-                        None => {
-                            this.listener = Some(this.semaphore.event.listen());
-                        }
-                        Some(ref mut listener) => {
-                            ready!(Pin::new(listener).poll(cx));
-                            this.listener = None;
-                        }
+                    if !this.listener.is_listening() {
+                        this.listener.as_mut().listen();
+                    } else {
+                        ready!(strategy.poll(this.listener.as_mut(), cx));
                     }
                 }
             }
@@ -219,13 +255,16 @@ impl<'a> Future for Acquire<'a> {
     }
 }
 
-/// The future returned by [`Semaphore::acquire_arc`].
-pub struct AcquireArc {
-    /// The semaphore being acquired.
-    semaphore: Arc<Semaphore>,
+pin_project_lite::pin_project! {
+    /// The future returned by [`Semaphore::acquire_arc`].
+    pub struct AcquireArc {
+        // The semaphore being acquired.
+        semaphore: Arc<Semaphore>,
 
-    /// The listener waiting on the semaphore.
-    listener: Option<EventListener>,
+        // The listener waiting on the semaphore.
+        #[pin]
+        listener: EventListener,
+    }
 }
 
 impl fmt::Debug for AcquireArc {
@@ -234,30 +273,21 @@ impl fmt::Debug for AcquireArc {
     }
 }
 
-impl Unpin for AcquireArc {}
-
 impl Future for AcquireArc {
     type Output = SemaphoreGuardArc;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
+        let mut this = self.project();
 
         loop {
             match this.semaphore.try_acquire_arc() {
-                Some(guard) => {
-                    this.listener = None;
-                    return Poll::Ready(guard);
-                }
+                Some(guard) => return Poll::Ready(guard),
                 None => {
                     // Wait on the listener.
-                    match &mut this.listener {
-                        None => {
-                            this.listener = Some(this.semaphore.event.listen());
-                        }
-                        Some(ref mut listener) => {
-                            ready!(Pin::new(listener).poll(cx));
-                            this.listener = None;
-                        }
+                    if !this.listener.is_listening() {
+                        this.listener.as_mut().listen();
+                    } else {
+                        ready!(this.listener.as_mut().poll(cx));
                     }
                 }
             }

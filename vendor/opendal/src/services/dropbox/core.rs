@@ -33,16 +33,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::raw::build_rooted_abs_path;
-use crate::raw::new_json_deserialize_error;
-use crate::raw::new_json_serialize_error;
-use crate::raw::new_request_build_error;
-use crate::raw::AsyncBody;
-use crate::raw::BatchedReply;
-use crate::raw::HttpClient;
-use crate::raw::IncomingAsyncBody;
-use crate::raw::RpBatch;
-use crate::raw::RpDelete;
+use crate::raw::*;
 use crate::services::dropbox::backend::DropboxDeleteBatchResponse;
 use crate::services::dropbox::backend::DropboxDeleteBatchResponseEntry;
 use crate::services::dropbox::error::parse_error;
@@ -51,15 +42,18 @@ use crate::types::ErrorKind;
 use crate::types::Result;
 
 pub struct DropboxCore {
-    pub signer: Arc<Mutex<DropboxSigner>>,
-    pub client: HttpClient,
     pub root: String,
+
+    pub client: HttpClient,
+
+    pub signer: Arc<Mutex<DropboxSigner>>,
 }
 
 impl Debug for DropboxCore {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut de = f.debug_struct("DropboxCore");
-        de.finish()
+        f.debug_struct("DropboxCore")
+            .field("root", &self.root)
+            .finish()
     }
 }
 
@@ -71,16 +65,28 @@ impl DropboxCore {
         path.trim_end_matches('/').to_string()
     }
 
-    pub async fn dropbox_get(&self, path: &str) -> Result<Response<IncomingAsyncBody>> {
+    pub async fn dropbox_get(
+        &self,
+        path: &str,
+        args: OpRead,
+    ) -> Result<Response<IncomingAsyncBody>> {
         let url: String = "https://content.dropboxapi.com/2/files/download".to_string();
         let download_args = DropboxDownloadArgs {
             path: build_rooted_abs_path(&self.root, path),
         };
         let request_payload =
             serde_json::to_string(&download_args).map_err(new_json_serialize_error)?;
-        let mut request = Request::post(&url)
+
+        let mut req = Request::post(&url)
             .header("Dropbox-API-Arg", request_payload)
-            .header(CONTENT_LENGTH, 0)
+            .header(CONTENT_LENGTH, 0);
+
+        let range = args.range();
+        if !range.is_full() {
+            req = req.header(header::RANGE, range.to_header());
+        }
+
+        let mut request = req
             .body(AsyncBody::Empty)
             .map_err(new_request_build_error)?;
 
@@ -92,11 +98,11 @@ impl DropboxCore {
         &self,
         path: &str,
         size: Option<usize>,
-        content_type: Option<&str>,
+        args: &OpWrite,
         body: AsyncBody,
     ) -> Result<Response<IncomingAsyncBody>> {
         let url = "https://content.dropboxapi.com/2/files/upload".to_string();
-        let args = DropboxUploadArgs {
+        let dropbox_update_args = DropboxUploadArgs {
             path: build_rooted_abs_path(&self.root, path),
             ..Default::default()
         };
@@ -106,13 +112,13 @@ impl DropboxCore {
         }
         request_builder = request_builder.header(
             CONTENT_TYPE,
-            content_type.unwrap_or("application/octet-stream"),
+            args.content_type().unwrap_or("application/octet-stream"),
         );
 
         let mut request = request_builder
             .header(
                 "Dropbox-API-Arg",
-                serde_json::to_string(&args).map_err(new_json_serialize_error)?,
+                serde_json::to_string(&dropbox_update_args).map_err(new_json_serialize_error)?,
             )
             .body(body)
             .map_err(new_request_build_error)?;
@@ -356,11 +362,11 @@ pub struct DropboxSigner {
 impl Default for DropboxSigner {
     fn default() -> Self {
         DropboxSigner {
-            refresh_token: "".to_string(),
+            refresh_token: String::new(),
             client_id: String::new(),
             client_secret: String::new(),
 
-            access_token: "".to_string(),
+            access_token: String::new(),
             expires_in: DateTime::<Utc>::MIN_UTC,
         }
     }

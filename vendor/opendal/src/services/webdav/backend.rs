@@ -38,58 +38,7 @@ use crate::raw::*;
 use crate::*;
 
 /// [WebDAV](https://datatracker.ietf.org/doc/html/rfc4918) backend support.
-///
-/// # Capabilities
-///
-/// This service can be used to:
-///
-/// - [x] stat
-/// - [x] read
-/// - [x] write
-/// - [x] create_dir
-/// - [x] delete
-/// - [x] copy
-/// - [x] rename
-/// - [x] list
-/// - [ ] ~~scan~~
-/// - [ ] ~~presign~~
-/// - [ ] blocking
-///
-/// # Notes
-///
-/// Bazel Remote Caching and Ccache HTTP Storage is also part of this service.
-/// Users can use `webdav` to connect those services.
-///
-/// # Configuration
-///
-/// - `endpoint`: set the endpoint for webdav
-/// - `root`: Set the work directory for backend
-///
-/// You can refer to [`WebdavBuilder`]'s docs for more information
-///
-/// # Example
-///
-/// ## Via Builder
-///
-/// ```no_run
-/// use anyhow::Result;
-/// use opendal::services::Webdav;
-/// use opendal::Operator;
-///
-/// #[tokio::main]
-/// async fn main() -> Result<()> {
-///     // create backend builder
-///     let mut builder = Webdav::default();
-///
-///     builder
-///         .endpoint("127.0.0.1")
-///         .username("xxx")
-///         .password("xxx");
-///
-///     let op: Operator = Operator::new(builder)?.finish();
-///     Ok(())
-/// }
-/// ```
+#[doc = include_str!("docs.md")]
 #[derive(Default)]
 pub struct WebdavBuilder {
     endpoint: Option<String>,
@@ -272,9 +221,8 @@ impl Debug for WebdavBackend {
 impl Accessor for WebdavBackend {
     type Reader = IncomingAsyncBody;
     type BlockingReader = ();
-    type Writer = WebdavWriter;
+    type Writer = oio::OneShotWriter<WebdavWriter>;
     type BlockingWriter = ();
-    type Appender = ();
     type Pager = Option<WebdavPager>;
     type BlockingPager = ();
 
@@ -282,7 +230,7 @@ impl Accessor for WebdavBackend {
         let mut ma = AccessorInfo::default();
         ma.set_scheme(Scheme::Webdav)
             .set_root(&self.root)
-            .set_capability(Capability {
+            .set_native_capability(Capability {
                 stat: true,
 
                 read: true,
@@ -290,7 +238,7 @@ impl Accessor for WebdavBackend {
                 read_with_range: true,
 
                 write: true,
-                write_can_sink: true,
+                write_can_empty: true,
 
                 create_dir: true,
                 delete: true,
@@ -316,7 +264,7 @@ impl Accessor for WebdavBackend {
     }
 
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
-        let resp = self.webdav_get(path, args.range()).await?;
+        let resp = self.webdav_get(path, args).await?;
         let status = resp.status();
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
@@ -328,21 +276,29 @@ impl Accessor for WebdavBackend {
     }
 
     async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        if args.content_length().is_none() {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                "write without content length is not supported",
-            ));
-        }
-
         self.ensure_parent_path(path).await?;
 
         let p = build_abs_path(&self.root, path);
 
-        Ok((RpWrite::default(), WebdavWriter::new(self.clone(), args, p)))
+        Ok((
+            RpWrite::default(),
+            oio::OneShotWriter::new(WebdavWriter::new(self.clone(), args, p)),
+        ))
     }
 
+    /// # Notes
+    ///
+    /// There is a strange dead lock issues when copying a non-exist file, so we will check
+    /// if the source exists first.
+    ///
+    /// For example: <https://github.com/apache/incubator-opendal/pull/2809>
     async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
+        if let Err(err) = self.stat(from, OpStat::default()).await {
+            if err.kind() == ErrorKind::NotFound {
+                return Err(err);
+            }
+        }
+
         self.ensure_parent_path(to).await?;
 
         let resp = self.webdav_copy(from, to).await?;
@@ -453,11 +409,7 @@ impl Accessor for WebdavBackend {
 }
 
 impl WebdavBackend {
-    async fn webdav_get(
-        &self,
-        path: &str,
-        range: BytesRange,
-    ) -> Result<Response<IncomingAsyncBody>> {
+    async fn webdav_get(&self, path: &str, args: OpRead) -> Result<Response<IncomingAsyncBody>> {
         let p = build_rooted_abs_path(&self.root, path);
         let url: String = format!("{}{}", self.endpoint, percent_encode_path(&p));
 
@@ -467,6 +419,7 @@ impl WebdavBackend {
             req = req.header(header::AUTHORIZATION, auth.clone())
         }
 
+        let range = args.range();
         if !range.is_full() {
             req = req.header(header::RANGE, range.to_header());
         }
@@ -482,8 +435,7 @@ impl WebdavBackend {
         &self,
         abs_path: &str,
         size: Option<u64>,
-        content_type: Option<&str>,
-        content_disposition: Option<&str>,
+        args: &OpWrite,
         body: AsyncBody,
     ) -> Result<Response<IncomingAsyncBody>> {
         let url = format!("{}/{}", self.endpoint, percent_encode_path(abs_path));
@@ -498,11 +450,11 @@ impl WebdavBackend {
             req = req.header(header::CONTENT_LENGTH, size)
         }
 
-        if let Some(mime) = content_type {
+        if let Some(mime) = args.content_type() {
             req = req.header(header::CONTENT_TYPE, mime)
         }
 
-        if let Some(cd) = content_disposition {
+        if let Some(cd) = args.content_disposition() {
             req = req.header(header::CONTENT_DISPOSITION, cd)
         }
 

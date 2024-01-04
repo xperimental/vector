@@ -240,6 +240,12 @@ impl<T> List<T> {
             queue: concurrent_queue::ConcurrentQueue::unbounded(),
         }
     }
+    pub fn total_listeners(&self) -> Result<usize, &str> {
+        self.inner
+            .try_lock()
+            .map(|lock| Ok(lock.listeners.len()))
+            .unwrap_or(Err("<locked>"))
+    }
 }
 
 /// The guard returned by [`Inner::lock`].
@@ -1267,14 +1273,8 @@ mod tests {
             listeners.listeners[1],
             Entry::Empty(NonZeroUsize::new(4).unwrap())
         );
-        assert_eq!(
-            listeners.listeners[2],
-            Entry::Listener {
-                state: Cell::new(State::Task(Task::Waker(waker))),
-                prev: Cell::new(None),
-                next: Cell::new(Some(key3)),
-            }
-        );
+        assert_eq!(*listeners.listeners[2].prev(), Cell::new(None));
+        assert_eq!(*listeners.listeners[2].next(), Cell::new(Some(key3)));
         assert_eq!(
             listeners.listeners[3],
             Entry::Listener {

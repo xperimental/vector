@@ -145,3 +145,24 @@ pub mod rfc_2299_chain_based_operator_api {}
 
 #[doc = include_str!("2602_object_versioning.md")]
 pub mod rfc_2602_object_versioning {}
+
+#[doc = include_str!("2758_merge_append_into_write.md")]
+pub mod rfc_2758_merge_append_into_write {}
+
+#[doc = include_str!("2774_lister_api.md")]
+pub mod rfc_2774_lister_api {}
+
+#[doc = include_str!("2779_list_with_metakey.md")]
+pub mod rfc_2779_list_with_metakey {}
+
+#[doc = include_str!("2852_native_capability.md")]
+pub mod rfc_2852_native_capability {}
+
+#[doc = include_str!("3017_remove_write_copy_from.md")]
+pub mod rfc_3017_remove_write_copy_from {}
+
+#[doc = include_str!("3197_config.md")]
+pub mod rfc_3197_config {}
+
+#[doc = include_str!("3232_align_list_api.md")]
+pub mod rfc_3232_align_list_api {}

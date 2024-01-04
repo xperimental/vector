@@ -86,7 +86,6 @@ impl<A: Accessor> LayeredAccessor for ConcurrentLimitAccessor<A> {
     type BlockingReader = ConcurrentLimitWrapper<A::BlockingReader>;
     type Writer = ConcurrentLimitWrapper<A::Writer>;
     type BlockingWriter = ConcurrentLimitWrapper<A::BlockingWriter>;
-    type Appender = ConcurrentLimitWrapper<A::Appender>;
     type Pager = ConcurrentLimitWrapper<A::Pager>;
     type BlockingPager = ConcurrentLimitWrapper<A::BlockingPager>;
 
@@ -130,20 +129,6 @@ impl<A: Accessor> LayeredAccessor for ConcurrentLimitAccessor<A> {
             .write(path, args)
             .await
             .map(|(rp, w)| (rp, ConcurrentLimitWrapper::new(w, permit)))
-    }
-
-    async fn append(&self, path: &str, args: OpAppend) -> Result<(RpAppend, Self::Appender)> {
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore must be valid");
-
-        self.inner
-            .append(path, args)
-            .await
-            .map(|(rp, a)| (rp, ConcurrentLimitWrapper::new(a, permit)))
     }
 
     async fn stat(&self, path: &str, args: OpStat) -> Result<RpStat> {
@@ -300,41 +285,26 @@ impl<R: oio::BlockingRead> oio::BlockingRead for ConcurrentLimitWrapper<R> {
 
 #[async_trait]
 impl<R: oio::Write> oio::Write for ConcurrentLimitWrapper<R> {
-    async fn write(&mut self, bs: Bytes) -> Result<()> {
-        self.inner.write(bs).await
+    fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
+        self.inner.poll_write(cx, bs)
     }
 
-    async fn abort(&mut self) -> Result<()> {
-        self.inner.abort().await
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        self.inner.poll_close(cx)
     }
 
-    async fn sink(&mut self, size: u64, s: oio::Streamer) -> Result<()> {
-        self.inner.sink(size, s).await
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        self.inner.close().await
+    fn poll_abort(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        self.inner.poll_abort(cx)
     }
 }
 
 impl<R: oio::BlockingWrite> oio::BlockingWrite for ConcurrentLimitWrapper<R> {
-    fn write(&mut self, bs: Bytes) -> Result<()> {
+    fn write(&mut self, bs: &dyn oio::WriteBuf) -> Result<usize> {
         self.inner.write(bs)
     }
 
     fn close(&mut self) -> Result<()> {
         self.inner.close()
-    }
-}
-
-#[async_trait]
-impl<R: oio::Append> oio::Append for ConcurrentLimitWrapper<R> {
-    async fn append(&mut self, bs: Bytes) -> Result<()> {
-        self.inner.append(bs).await
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        self.inner.close().await
     }
 }
 

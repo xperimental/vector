@@ -812,7 +812,7 @@ impl<'de> serde::de::VariantAccess<'de> for MapEnumDeserializer {
                 }
             }
             Value::Table(values) => {
-                let tuple_values = values
+                let tuple_values: Result<Vec<_>, _> = values
                     .into_iter()
                     .enumerate()
                     .map(|(index, (key, value))| match key.parse::<usize>() {
@@ -822,17 +822,8 @@ impl<'de> serde::de::VariantAccess<'de> for MapEnumDeserializer {
                             index, key
                         ))),
                     })
-                    // Fold all values into a `Vec`, or return the first error.
-                    .fold(Ok(Vec::with_capacity(len)), |result, value_result| {
-                        result.and_then(move |mut tuple_values| match value_result {
-                            Ok(value) => {
-                                tuple_values.push(value);
-                                Ok(tuple_values)
-                            }
-                            // `Result<de::Value, Self::Error>` to `Result<Vec<_>, Self::Error>`
-                            Err(e) => Err(e),
-                        })
-                    })?;
+                    .collect();
+                let tuple_values = tuple_values?;
 
                 if tuple_values.len() == len {
                     serde::de::Deserializer::deserialize_seq(
@@ -930,10 +921,14 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_f32(self, value: f32) -> Result<Value, crate::ser::Error> {
-        self.serialize_f64(value.into())
+        self.serialize_f64(value as f64)
     }
 
-    fn serialize_f64(self, value: f64) -> Result<Value, crate::ser::Error> {
+    fn serialize_f64(self, mut value: f64) -> Result<Value, crate::ser::Error> {
+        // Discard sign of NaN. See ValueSerializer::serialize_f64.
+        if value.is_nan() {
+            value = value.copysign(1.0);
+        }
         Ok(Value::Float(value))
     }
 

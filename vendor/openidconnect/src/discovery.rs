@@ -31,7 +31,7 @@ pub trait AdditionalProviderMetadata: Clone + Debug + DeserializeOwned + Seriali
 ///
 /// Empty (default) extra [`ProviderMetadata`] fields.
 ///
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct EmptyAdditionalProviderMetadata {}
 impl AdditionalProviderMetadata for EmptyAdditionalProviderMetadata {}
 
@@ -41,7 +41,7 @@ impl AdditionalProviderMetadata for EmptyAdditionalProviderMetadata {}
 ///
 #[serde_as]
 #[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[allow(clippy::type_complexity)]
 pub struct ProviderMetadata<A, AD, CA, CN, CT, G, JE, JK, JS, JT, JU, K, RM, RT, S>
 where
@@ -323,7 +323,7 @@ where
     ) -> Result<Self, DiscoveryError<RE>>
     where
         F: Future<Output = Result<HttpResponse, RE>>,
-        HC: Fn(HttpRequest) -> F + 'static,
+        HC: Fn(HttpRequest) -> F,
         RE: std::error::Error + 'static,
     {
         let discovery_url = issuer_url
@@ -668,7 +668,6 @@ mod tests {
             "\"end_session_endpoint\":\"https://rp.certification.openid.net:8080/openidconnect-rs/rp-response_type-code/end_session\",\
             \"version\":\"3.0\""
         );
-        dbg!(&json_response);
 
         let all_signing_algs = vec![
             CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,

@@ -32,10 +32,10 @@ use super::error::parse_error;
 use super::pager::CosPager;
 use super::writer::CosWriter;
 use crate::raw::*;
-use crate::services::cos::appender::CosAppender;
+use crate::services::cos::writer::CosWriters;
 use crate::*;
 
-/// Huawei Cloud COS services support.
+/// Tencent-Cloud COS services support.
 #[doc = include_str!("docs.md")]
 #[derive(Default, Clone)]
 pub struct CosBuilder {
@@ -233,7 +233,7 @@ impl Builder for CosBuilder {
     }
 }
 
-/// Backend for Huaweicloud COS services.
+/// Backend for Tencent-Cloud COS services.
 #[derive(Debug, Clone)]
 pub struct CosBackend {
     core: Arc<CosCore>,
@@ -243,9 +243,8 @@ pub struct CosBackend {
 impl Accessor for CosBackend {
     type Reader = IncomingAsyncBody;
     type BlockingReader = ();
-    type Writer = CosWriter;
+    type Writer = CosWriters;
     type BlockingWriter = ();
-    type Appender = CosAppender;
     type Pager = CosPager;
     type BlockingPager = ();
 
@@ -254,7 +253,7 @@ impl Accessor for CosBackend {
         am.set_scheme(Scheme::Cos)
             .set_root(&self.core.root)
             .set_name(&self.core.bucket)
-            .set_capability(Capability {
+            .set_native_capability(Capability {
                 stat: true,
                 stat_with_if_match: true,
                 stat_with_if_none_match: true,
@@ -266,14 +265,24 @@ impl Accessor for CosBackend {
                 read_with_if_none_match: true,
 
                 write: true,
-                write_can_sink: true,
+                write_can_empty: true,
+                write_can_append: true,
+                write_can_multi: true,
                 write_with_content_type: true,
                 write_with_cache_control: true,
-
-                append: true,
-                append_with_cache_control: true,
-                append_with_content_disposition: true,
-                append_with_content_type: true,
+                write_with_content_disposition: true,
+                // The min multipart size of COS is 1 MiB.
+                //
+                // ref: <https://www.tencentcloud.com/document/product/436/14112>
+                write_multi_min_size: Some(1024 * 1024),
+                // The max multipart size of COS is 5 GiB.
+                //
+                // ref: <https://www.tencentcloud.com/document/product/436/14112>
+                write_multi_max_size: if cfg!(target_pointer_width = "64") {
+                    Some(5 * 1024 * 1024 * 1024)
+                } else {
+                    Some(usize::MAX)
+                },
 
                 delete: true,
                 create_dir: true,
@@ -295,9 +304,12 @@ impl Accessor for CosBackend {
     }
 
     async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
-        let mut req =
-            self.core
-                .cos_put_object_request(path, Some(0), None, None, AsyncBody::Empty)?;
+        let mut req = self.core.cos_put_object_request(
+            path,
+            Some(0),
+            &OpWrite::default(),
+            AsyncBody::Empty,
+        )?;
 
         self.core.sign(&mut req).await?;
 
@@ -315,10 +327,7 @@ impl Accessor for CosBackend {
     }
 
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
-        let resp = self
-            .core
-            .cos_get_object(path, args.range(), args.if_match(), args.if_none_match())
-            .await?;
+        let resp = self.core.cos_get_object(path, &args).await?;
 
         let status = resp.status();
 
@@ -332,24 +341,15 @@ impl Accessor for CosBackend {
     }
 
     async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        if args.content_length().is_none() {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                "write without content length is not supported",
-            ));
-        }
+        let writer = CosWriter::new(self.core.clone(), path, args.clone());
 
-        Ok((
-            RpWrite::default(),
-            CosWriter::new(self.core.clone(), args, path.to_string()),
-        ))
-    }
+        let w = if args.append() {
+            CosWriters::Two(oio::AppendObjectWriter::new(writer))
+        } else {
+            CosWriters::One(oio::MultipartUploadWriter::new(writer))
+        };
 
-    async fn append(&self, path: &str, args: OpAppend) -> Result<(RpAppend, Self::Appender)> {
-        Ok((
-            RpAppend::default(),
-            CosAppender::new(self.core.clone(), path, args),
-        ))
+        Ok((RpWrite::default(), w))
     }
 
     async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
@@ -372,10 +372,7 @@ impl Accessor for CosBackend {
             return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
         }
 
-        let resp = self
-            .core
-            .cos_head_object(path, args.if_match(), args.if_none_match())
-            .await?;
+        let resp = self.core.cos_head_object(path, &args).await?;
 
         let status = resp.status();
 
@@ -404,23 +401,12 @@ impl Accessor for CosBackend {
 
     async fn presign(&self, path: &str, args: OpPresign) -> Result<RpPresign> {
         let mut req = match args.operation() {
-            PresignOperation::Stat(v) => {
+            PresignOperation::Stat(v) => self.core.cos_head_object_request(path, v)?,
+            PresignOperation::Read(v) => self.core.cos_get_object_request(path, v)?,
+            PresignOperation::Write(v) => {
                 self.core
-                    .cos_head_object_request(path, v.if_match(), v.if_none_match())?
+                    .cos_put_object_request(path, None, v, AsyncBody::Empty)?
             }
-            PresignOperation::Read(v) => self.core.cos_get_object_request(
-                path,
-                v.range(),
-                v.if_match(),
-                v.if_none_match(),
-            )?,
-            PresignOperation::Write(v) => self.core.cos_put_object_request(
-                path,
-                None,
-                v.content_type(),
-                v.cache_control(),
-                AsyncBody::Empty,
-            )?,
         };
         self.core.sign_query(&mut req, args.expire()).await?;
 

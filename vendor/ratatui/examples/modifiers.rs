@@ -43,10 +43,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     }
 }
 
-fn ui<B: Backend>(frame: &mut Frame<B>) {
+fn ui(frame: &mut Frame) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(1), Constraint::Min(0)])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(frame.size());
     frame.render_widget(
         Paragraph::new("Note: not all terminals support all modifiers")
@@ -55,13 +55,13 @@ fn ui<B: Backend>(frame: &mut Frame<B>) {
     );
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(1); 50])
+        .constraints([Constraint::Length(1); 50])
         .split(layout[1])
         .iter()
         .flat_map(|area| {
             Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints(vec![Constraint::Percentage(20); 5])
+                .constraints([Constraint::Percentage(20); 5])
                 .split(*area)
                 .to_vec()
         })

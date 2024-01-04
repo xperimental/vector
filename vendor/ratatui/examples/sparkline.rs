@@ -109,9 +109,7 @@ fn run_app<B: Backend>(
     loop {
         terminal.draw(|f| ui(f, &app))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if let KeyCode::Char('q') = key.code {
@@ -126,18 +124,14 @@ fn run_app<B: Backend>(
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Length(7),
-                Constraint::Min(0),
-            ]
-            .as_ref(),
-        )
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
         .split(f.size());
     let sparkline = Sparkline::default()
         .block(

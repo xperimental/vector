@@ -11,7 +11,8 @@ pub use format::{
     AvroSerializer, AvroSerializerConfig, AvroSerializerOptions, CsvSerializer,
     CsvSerializerConfig, GelfSerializer, GelfSerializerConfig, JsonSerializer,
     JsonSerializerConfig, LogfmtSerializer, LogfmtSerializerConfig, NativeJsonSerializer,
-    NativeJsonSerializerConfig, NativeSerializer, NativeSerializerConfig, RawMessageSerializer,
+    NativeJsonSerializerConfig, NativeSerializer, NativeSerializerConfig, ProtobufSerializer,
+    ProtobufSerializerConfig, ProtobufSerializerOptions, RawMessageSerializer,
     RawMessageSerializerConfig, TextSerializer, TextSerializerConfig,
     SyslogSerializer, SyslogSerializerConfig
 };
@@ -223,6 +224,11 @@ pub enum SerializerConfig {
     /// [experimental]: https://vector.dev/highlights/2022-03-31-native-event-codecs
     NativeJson,
 
+    /// Encodes an event as a [Protobuf][protobuf] message.
+    ///
+    /// [protobuf]: https://protobuf.dev/
+    Protobuf(ProtobufSerializerConfig),
+
     /// No encoding.
     ///
     /// This encoding uses the `message` field of a log event.
@@ -289,6 +295,12 @@ impl From<NativeJsonSerializerConfig> for SerializerConfig {
     }
 }
 
+impl From<ProtobufSerializerConfig> for SerializerConfig {
+    fn from(config: ProtobufSerializerConfig) -> Self {
+        Self::Protobuf(config)
+    }
+}
+
 impl From<RawMessageSerializerConfig> for SerializerConfig {
     fn from(_: RawMessageSerializerConfig) -> Self {
         Self::RawMessage
@@ -322,6 +334,7 @@ impl SerializerConfig {
             SerializerConfig::NativeJson => {
                 Ok(Serializer::NativeJson(NativeJsonSerializerConfig.build()))
             }
+            SerializerConfig::Protobuf(config) => Ok(Serializer::Protobuf(config.build()?)),
             SerializerConfig::RawMessage => {
                 Ok(Serializer::RawMessage(RawMessageSerializerConfig.build()))
             }
@@ -344,9 +357,9 @@ impl SerializerConfig {
             // we should do so accurately, even if practically it doesn't need to be.
             //
             // [1]: https://avro.apache.org/docs/1.11.1/specification/_print/#message-framing
-            SerializerConfig::Avro { .. } | SerializerConfig::Native => {
-                FramingConfig::LengthDelimited
-            }
+            SerializerConfig::Avro { .. }
+            | SerializerConfig::Native
+            | SerializerConfig::Protobuf(_) => FramingConfig::LengthDelimited,
             SerializerConfig::Csv(_)
             | SerializerConfig::Gelf
             | SerializerConfig::Json(_)
@@ -370,6 +383,7 @@ impl SerializerConfig {
             SerializerConfig::Logfmt => LogfmtSerializerConfig.input_type(),
             SerializerConfig::Native => NativeSerializerConfig.input_type(),
             SerializerConfig::NativeJson => NativeJsonSerializerConfig.input_type(),
+            SerializerConfig::Protobuf(config) => config.input_type(),
             SerializerConfig::RawMessage => RawMessageSerializerConfig.input_type(),
             SerializerConfig::Text(config) => config.input_type(),
             SerializerConfig::Syslog(config) => config.input_type(),
@@ -388,6 +402,7 @@ impl SerializerConfig {
             SerializerConfig::Logfmt => LogfmtSerializerConfig.schema_requirement(),
             SerializerConfig::Native => NativeSerializerConfig.schema_requirement(),
             SerializerConfig::NativeJson => NativeJsonSerializerConfig.schema_requirement(),
+            SerializerConfig::Protobuf(config) => config.schema_requirement(),
             SerializerConfig::RawMessage => RawMessageSerializerConfig.schema_requirement(),
             SerializerConfig::Text(config) => config.schema_requirement(),
             SerializerConfig::Syslog(config) => config.schema_requirement(),
@@ -412,6 +427,8 @@ pub enum Serializer {
     Native(NativeSerializer),
     /// Uses a `NativeJsonSerializer` for serialization.
     NativeJson(NativeJsonSerializer),
+    /// Uses a `ProtobufSerializer` for serialization.
+    Protobuf(ProtobufSerializer),
     /// Uses a `RawMessageSerializer` for serialization.
     RawMessage(RawMessageSerializer),
     /// Uses a `TextSerializer` for serialization.
@@ -430,8 +447,9 @@ impl Serializer {
             | Serializer::Logfmt(_)
             | Serializer::Text(_)
             | Serializer::Native(_)
-            | Serializer::RawMessage(_)
-            | Serializer::Syslog(_) => false,
+            | Serializer::Syslog(_)
+            | Serializer::Protobuf(_)
+            | Serializer::RawMessage(_) => false,
         }
     }
 
@@ -451,8 +469,9 @@ impl Serializer {
             | Serializer::Logfmt(_)
             | Serializer::Text(_)
             | Serializer::Native(_)
-            | Serializer::RawMessage(_)
-            | Serializer::Syslog(_) => {
+            | Serializer::Syslog(_)
+            | Serializer::Protobuf(_)
+            | Serializer::RawMessage(_) => {
                 panic!("Serializer does not support JSON")
             }
         }
@@ -501,6 +520,12 @@ impl From<NativeJsonSerializer> for Serializer {
     }
 }
 
+impl From<ProtobufSerializer> for Serializer {
+    fn from(serializer: ProtobufSerializer) -> Self {
+        Self::Protobuf(serializer)
+    }
+}
+
 impl From<RawMessageSerializer> for Serializer {
     fn from(serializer: RawMessageSerializer) -> Self {
         Self::RawMessage(serializer)
@@ -531,6 +556,7 @@ impl tokio_util::codec::Encoder<Event> for Serializer {
             Serializer::Logfmt(serializer) => serializer.encode(event, buffer),
             Serializer::Native(serializer) => serializer.encode(event, buffer),
             Serializer::NativeJson(serializer) => serializer.encode(event, buffer),
+            Serializer::Protobuf(serializer) => serializer.encode(event, buffer),
             Serializer::RawMessage(serializer) => serializer.encode(event, buffer),
             Serializer::Text(serializer) => serializer.encode(event, buffer),
             Serializer::Syslog(serializer) => serializer.encode(event, buffer),

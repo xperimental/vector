@@ -9,6 +9,7 @@
 //! - [`Partial`] can mark an input as partial buffer that is being streamed into
 //! - [Custom stream types][crate::_topic::stream]
 
+use core::hash::BuildHasher;
 use core::num::NonZeroUsize;
 
 use crate::error::Needed;
@@ -211,7 +212,7 @@ impl<I: crate::lib::std::fmt::Display, S> crate::lib::std::fmt::Display for Stat
 
 /// Mark the input as a partial buffer for streaming input.
 ///
-/// Complete input means that we already have all of the data.  This will be the common case with
+/// Complete input means that we already have all of the data. This will be the common case with
 /// small files that can be read entirely to memory.
 ///
 /// In contrast, streaming input assumes that we might not have all of the data.
@@ -460,7 +461,7 @@ pub trait Stream: Offset<<Self as Stream>::Checkpoint> + crate::lib::std::fmt::D
     /// Split off a slice of tokens from the input
     ///
     /// **NOTE:** For inputs with variable width tokens, like `&str`'s `char`, `offset` might not correspond
-    /// with the number of tokens.  To get a valid offset, use:
+    /// with the number of tokens. To get a valid offset, use:
     /// - [`Stream::eof_offset`]
     /// - [`Stream::iter_offsets`]
     /// - [`Stream::offset_for`]
@@ -1966,7 +1967,7 @@ where
     }
 }
 
-/// Ensure checkpoint details are kept privazte
+/// Ensure checkpoint details are kept private
 #[derive(Copy, Clone, Debug)]
 pub struct Checkpoint<T>(T);
 
@@ -2190,15 +2191,19 @@ where
 }
 
 #[cfg(feature = "std")]
-impl<K, V> Accumulate<(K, V)> for HashMap<K, V>
+impl<K, V, S> Accumulate<(K, V)> for HashMap<K, V, S>
 where
     K: crate::lib::std::cmp::Eq + crate::lib::std::hash::Hash,
+    S: BuildHasher + Default,
 {
     #[inline(always)]
     fn initial(capacity: Option<usize>) -> Self {
+        let h = S::default();
         match capacity {
-            Some(capacity) => HashMap::with_capacity(clamp_capacity::<(K, V)>(capacity)),
-            None => HashMap::new(),
+            Some(capacity) => {
+                HashMap::with_capacity_and_hasher(clamp_capacity::<(K, V)>(capacity), h)
+            }
+            None => HashMap::with_hasher(h),
         }
     }
     #[inline(always)]

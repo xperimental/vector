@@ -175,9 +175,7 @@ fn run_app<B: Backend>(
     loop {
         terminal.draw(|f| ui(f, &mut app))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
@@ -198,11 +196,11 @@ fn run_app<B: Backend>(
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+fn ui(f: &mut Frame, app: &mut App) {
     // Create two chunks with equal horizontal screen space
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(f.size());
 
     // Iterate through all elements in the `items` app and append some debug text to it.

@@ -31,9 +31,10 @@ use log::warn;
 use md5::Digest;
 use md5::Md5;
 use once_cell::sync::Lazy;
+use reqsign::AwsAssumeRoleLoader;
 use reqsign::AwsConfig;
 use reqsign::AwsCredentialLoad;
-use reqsign::AwsLoader;
+use reqsign::AwsDefaultLoader;
 use reqsign::AwsV4Signer;
 
 use super::core::*;
@@ -42,6 +43,7 @@ use super::error::parse_s3_error_code;
 use super::pager::S3Pager;
 use super::writer::S3Writer;
 use crate::raw::*;
+use crate::services::s3::writer::S3Writers;
 use crate::*;
 
 /// Allow constructing correct region endpoint if user gives a global endpoint.
@@ -55,7 +57,6 @@ static ENDPOINT_TEMPLATES: Lazy<HashMap<&'static str, &'static str>> = Lazy::new
     m
 });
 
-const DEFAULT_WRITE_MIN_SIZE: usize = 8 * 1024 * 1024;
 const DEFAULT_BATCH_MAX_OPERATIONS: usize = 1000;
 
 /// Aws S3 and compatible services (including minio, digitalocean space, Tencent Cloud Object Storage(COS) and so on) support.
@@ -69,33 +70,30 @@ pub struct S3Builder {
     bucket: String,
     endpoint: Option<String>,
     region: Option<String>,
-    role_arn: Option<String>,
-    external_id: Option<String>,
+
+    // Credentials related values.
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
+    security_token: Option<String>,
+    role_arn: Option<String>,
+    external_id: Option<String>,
+    disable_config_load: bool,
+    disable_ec2_metadata: bool,
+    allow_anonymous: bool,
+    customed_credential_load: Option<Box<dyn AwsCredentialLoad>>,
+
+    // S3 feature
     server_side_encryption: Option<String>,
     server_side_encryption_aws_kms_key_id: Option<String>,
     server_side_encryption_customer_algorithm: Option<String>,
     server_side_encryption_customer_key: Option<String>,
     server_side_encryption_customer_key_md5: Option<String>,
     default_storage_class: Option<String>,
-
-    /// temporary credentials, check the official [doc](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_temp.html) for detail
-    security_token: Option<String>,
-
-    disable_config_load: bool,
-    disable_ec2_metadata: bool,
-    allow_anonymous: bool,
     enable_virtual_host_style: bool,
+    batch_max_operations: Option<usize>,
+    enable_exact_buf_write: bool,
 
     http_client: Option<HttpClient>,
-    customed_credential_load: Option<Box<dyn AwsCredentialLoad>>,
-
-    /// the part size of s3 multipart upload, which should be 5 MiB to 5 GiB.
-    /// There is no minimum size limit on the last part of your multipart upload
-    write_min_size: Option<usize>,
-    /// batch_max_operations
-    batch_max_operations: Option<usize>,
 }
 
 impl Debug for S3Builder {
@@ -157,7 +155,7 @@ impl S3Builder {
     ///
     /// If using a custom endpoint,
     /// - If region is set, we will take user's input first.
-    /// - If not, the default `us-east-1` will be used.
+    /// - If not, we will try to load it from environment.
     pub fn region(&mut self, region: &str) -> &mut Self {
         if !region.is_empty() {
             self.region = Some(region.to_string())
@@ -191,6 +189,9 @@ impl S3Builder {
     }
 
     /// Set role_arn for this backend.
+    ///
+    /// If `role_arn` is set, we will use already known config as source
+    /// credential to assume role with `role_arn`.
     pub fn role_arn(&mut self, v: &str) -> &mut Self {
         if !v.is_empty() {
             self.role_arn = Some(v.to_string())
@@ -432,6 +433,9 @@ impl S3Builder {
     }
 
     /// Adding a customed credential load for service.
+    ///
+    /// If customed_credential_load has been set, we will ignore all other
+    /// credential load methods.
     pub fn customed_credential_load(&mut self, cred: Box<dyn AwsCredentialLoad>) -> &mut Self {
         self.customed_credential_load = Some(cred);
         self
@@ -506,16 +510,19 @@ impl S3Builder {
         endpoint
     }
 
-    /// set the minimum size of unsized write, it should be greater than 5 MB.
-    /// Reference: [Amazon S3 multipart upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html)
-    pub fn write_min_size(&mut self, write_min_size: usize) -> &mut Self {
-        self.write_min_size = Some(write_min_size);
-
-        self
-    }
     /// Set maximum batch operations of this backend.
     pub fn batch_max_operations(&mut self, batch_max_operations: usize) -> &mut Self {
         self.batch_max_operations = Some(batch_max_operations);
+
+        self
+    }
+
+    /// Enable exact buf write so that opendal will write data with exact size.
+    ///
+    /// This option is used for services like R2 which requires all parts must be the same size
+    /// except the last part.
+    pub fn enable_exact_buf_write(&mut self) -> &mut Self {
+        self.enable_exact_buf_write = true;
 
         self
     }
@@ -548,15 +555,18 @@ impl S3Builder {
     /// use opendal::services::S3;
     ///
     /// # async fn example() {
-    /// let builder = S3::default();
-    /// let region: Option<String> = builder.detect_region("https://s3.amazonaws.com", "example").await;
+    /// let region: Option<String> = S3::detect_region("https://s3.amazonaws.com", "example").await;
     /// # }
     /// ```
     ///
     /// # Reference
     ///
     /// - [Amazon S3 HeadBucket API](https://docs.aws.amazon.com/zh_cn/AmazonS3/latest/API/API_HeadBucket.html)
-    pub async fn detect_region(&self, endpoint: &str, bucket: &str) -> Option<String> {
+    pub async fn detect_region(endpoint: &str, bucket: &str) -> Option<String> {
+        // Remove the possible trailing `/` in endpoint.
+        let endpoint = endpoint.trim_end_matches('/');
+
+        // Make sure the endpoint contains the scheme.
         let mut endpoint = if endpoint.starts_with("http") {
             endpoint.to_string()
         } else {
@@ -616,18 +626,20 @@ impl S3Builder {
             res.headers()
         );
 
-        match res.status() {
-            StatusCode::OK | StatusCode::FORBIDDEN | StatusCode::MOVED_PERMANENTLY => {
-                let region = res.headers().get("x-amz-bucket-region")?;
-                if let Ok(regin) = region.to_str() {
-                    Some(regin.to_string())
-                } else {
-                    None
-                }
+        // Get region from response header no matter status code.
+        if let Some(header) = res.headers().get("x-amz-bucket-region") {
+            if let Ok(regin) = header.to_str() {
+                return Some(regin.to_string());
             }
-            // Unexpected status code
-            _ => None,
         }
+
+        // Status code is 403 or 200 means we already visit the correct
+        // region, we can use the default region directly.
+        if res.status() == StatusCode::FORBIDDEN || res.status() == StatusCode::OK {
+            return Some("us-east-1".to_string());
+        }
+
+        None
     }
 }
 
@@ -672,10 +684,11 @@ impl Builder for S3Builder {
             .map(|_| builder.allow_anonymous());
         map.get("default_storage_class")
             .map(|v: &String| builder.default_storage_class(v));
-        map.get("write_min_size")
-            .map(|v| builder.write_min_size(v.parse().expect("input must be a number")));
         map.get("batch_max_operations")
             .map(|v| builder.batch_max_operations(v.parse().expect("input must be a number")));
+        map.get("enable_exact_buf_write")
+            .filter(|v| *v == "on" || *v == "true")
+            .map(|_| builder.enable_exact_buf_write());
 
         builder
     }
@@ -753,46 +766,23 @@ impl Builder for S3Builder {
             })?
         };
 
+        // This is our current config.
         let mut cfg = AwsConfig::default();
         if !self.disable_config_load {
             cfg = cfg.from_profile();
             cfg = cfg.from_env();
         }
 
-        // Setting all value from user input if available.
         if let Some(v) = self.region.take() {
             cfg.region = Some(v);
         }
-        if let Some(v) = self.access_key_id.take() {
-            cfg.access_key_id = Some(v)
-        }
-        if let Some(v) = self.secret_access_key.take() {
-            cfg.secret_access_key = Some(v)
-        }
-        if let Some(v) = self.security_token.take() {
-            cfg.session_token = Some(v)
-        }
-        if let Some(v) = self.role_arn.take() {
-            cfg.role_arn = Some(v)
-        }
-        if let Some(v) = self.external_id.take() {
-            cfg.external_id = Some(v)
-        }
-
         if cfg.region.is_none() {
-            // AWS S3 requires region to be set.
-            if self.endpoint.is_none()
-                || self.endpoint.as_deref() == Some("https://s3.amazonaws.com")
-            {
-                return Err(Error::new(ErrorKind::ConfigInvalid, "region is missing")
-                    .with_operation("Builder::build")
-                    .with_context("service", Scheme::S3));
-            }
-
-            // For other compatible services, if we don't know region
-            // after loading from builder and env, we can use `us-east-1`
-            // as default.
-            cfg.region = Some("us-east-1".to_string());
+            return Err(Error::new(
+                ErrorKind::ConfigInvalid,
+                "region is missing. Please find it by S3::detect_region() or set them in env.",
+            )
+            .with_operation("Builder::build")
+            .with_context("service", Scheme::S3));
         }
 
         let region = cfg.region.to_owned().unwrap();
@@ -802,23 +792,66 @@ impl Builder for S3Builder {
         let endpoint = self.build_endpoint(&region);
         debug!("backend use endpoint: {endpoint}");
 
-        let mut loader = AwsLoader::new(client.client(), cfg);
-        if self.disable_ec2_metadata {
-            loader = loader.with_disable_ec2_metadata();
+        // Setting all value from user input if available.
+        if let Some(v) = self.access_key_id.take() {
+            cfg.access_key_id = Some(v)
         }
-        if let Some(v) = self.customed_credential_load.take() {
-            loader = loader.with_customed_credential_loader(v);
+        if let Some(v) = self.secret_access_key.take() {
+            cfg.secret_access_key = Some(v)
+        }
+        if let Some(v) = self.security_token.take() {
+            cfg.session_token = Some(v)
         }
 
-        let signer = AwsV4Signer::new("s3", &region);
-        let write_min_size = self.write_min_size.unwrap_or(DEFAULT_WRITE_MIN_SIZE);
-        if write_min_size < 5 * 1024 * 1024 {
-            return Err(Error::new(
-                ErrorKind::ConfigInvalid,
-                "The write minimum buffer size is misconfigured",
-            )
-            .with_context("service", Scheme::S3));
+        let mut loader: Option<Box<dyn AwsCredentialLoad>> = None;
+        // If customed_credential_load is set, we will use it.
+        if let Some(v) = self.customed_credential_load.take() {
+            loader = Some(v);
         }
+
+        // If role_arn is set, we must use AssumeRoleLoad.
+        if let Some(role_arn) = self.role_arn.take() {
+            // use current env as source credential loader.
+            let default_loader = AwsDefaultLoader::new(client.client(), cfg.clone());
+
+            // Build the config for assume role.
+            let assume_role_cfg = AwsConfig {
+                region: Some(region.clone()),
+                role_arn: Some(role_arn),
+                external_id: self.external_id.clone(),
+                sts_regional_endpoints: "regional".to_string(),
+                ..Default::default()
+            };
+            let assume_role_loader = AwsAssumeRoleLoader::new(
+                client.client(),
+                assume_role_cfg,
+                Box::new(default_loader),
+            )
+            .map_err(|err| {
+                Error::new(
+                    ErrorKind::ConfigInvalid,
+                    "The assume_role_loader is misconfigured",
+                )
+                .with_context("service", Scheme::S3)
+                .set_source(err)
+            })?;
+            loader = Some(Box::new(assume_role_loader));
+        }
+        // If loader is not set, we will use default loader.
+        let loader = match loader {
+            Some(v) => v,
+            None => {
+                let mut default_loader = AwsDefaultLoader::new(client.client(), cfg);
+                if self.disable_ec2_metadata {
+                    default_loader = default_loader.with_disable_ec2_metadata();
+                }
+
+                Box::new(default_loader)
+            }
+        };
+
+        let signer = AwsV4Signer::new("s3", &region);
+
         let batch_max_operations = self
             .batch_max_operations
             .unwrap_or(DEFAULT_BATCH_MAX_OPERATIONS);
@@ -835,10 +868,10 @@ impl Builder for S3Builder {
                 server_side_encryption_customer_key_md5,
                 default_storage_class,
                 allow_anonymous: self.allow_anonymous,
+                enable_exact_buf_write: self.enable_exact_buf_write,
                 signer,
                 loader,
                 client,
-                write_min_size,
                 batch_max_operations,
             }),
         })
@@ -855,9 +888,8 @@ pub struct S3Backend {
 impl Accessor for S3Backend {
     type Reader = IncomingAsyncBody;
     type BlockingReader = ();
-    type Writer = S3Writer;
+    type Writer = S3Writers;
     type BlockingWriter = ();
-    type Appender = ();
     type Pager = S3Pager;
     type BlockingPager = ();
 
@@ -866,7 +898,7 @@ impl Accessor for S3Backend {
         am.set_scheme(Scheme::S3)
             .set_root(&self.core.root)
             .set_name(&self.core.bucket)
-            .set_capability(Capability {
+            .set_native_capability(Capability {
                 stat: true,
                 stat_with_if_match: true,
                 stat_with_if_none_match: true,
@@ -878,12 +910,26 @@ impl Accessor for S3Backend {
                 read_with_if_none_match: true,
                 read_with_override_cache_control: true,
                 read_with_override_content_disposition: true,
+                read_with_override_content_type: true,
 
                 write: true,
-                write_can_sink: true,
+                write_can_empty: true,
+                write_can_multi: true,
                 write_with_cache_control: true,
                 write_with_content_type: true,
-                write_without_content_length: true,
+                // The min multipart size of S3 is 5 MiB.
+                //
+                // ref: <https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html>
+                write_multi_min_size: Some(5 * 1024 * 1024),
+                // The max multipart size of S3 is 5 GiB.
+                //
+                // ref: <https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html>
+                write_multi_max_size: if cfg!(target_pointer_width = "64") {
+                    Some(5 * 1024 * 1024 * 1024)
+                } else {
+                    Some(usize::MAX)
+                },
+
                 create_dir: true,
                 delete: true,
                 copy: true,
@@ -909,9 +955,12 @@ impl Accessor for S3Backend {
     }
 
     async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
-        let mut req =
-            self.core
-                .s3_put_object_request(path, Some(0), None, None, None, AsyncBody::Empty)?;
+        let mut req = self.core.s3_put_object_request(
+            path,
+            Some(0),
+            &OpWrite::default(),
+            AsyncBody::Empty,
+        )?;
 
         self.core.sign(&mut req).await?;
 
@@ -929,16 +978,7 @@ impl Accessor for S3Backend {
     }
 
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
-        let resp = self
-            .core
-            .s3_get_object(
-                path,
-                args.range(),
-                args.if_none_match(),
-                args.if_match(),
-                args.override_content_disposition(),
-            )
-            .await?;
+        let resp = self.core.s3_get_object(path, args).await?;
 
         let status = resp.status();
 
@@ -952,10 +992,11 @@ impl Accessor for S3Backend {
     }
 
     async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        Ok((
-            RpWrite::default(),
-            S3Writer::new(self.core.clone(), path, args),
-        ))
+        let writer = S3Writer::new(self.core.clone(), path, args);
+
+        let w = oio::MultipartUploadWriter::new(writer);
+
+        Ok((RpWrite::default(), w))
     }
 
     async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
@@ -1004,6 +1045,10 @@ impl Accessor for S3Backend {
 
         match status {
             StatusCode::NO_CONTENT => Ok(RpDelete::default()),
+            // Allow 404 when deleting a non-existing object
+            // This is not a standard behavior, only some s3 alike service like GCS XML API do this.
+            // ref: <https://cloud.google.com/storage/docs/xml-api/delete-object>
+            StatusCode::NOT_FOUND => Ok(RpDelete::default()),
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -1028,18 +1073,13 @@ impl Accessor for S3Backend {
                 self.core
                     .s3_head_object_request(path, v.if_none_match(), v.if_match())?
             }
-            PresignOperation::Read(v) => self.core.s3_get_object_request(
+            PresignOperation::Read(v) => self.core.s3_get_object_request(path, v.clone())?,
+            PresignOperation::Write(_) => self.core.s3_put_object_request(
                 path,
-                v.range(),
-                v.override_content_disposition(),
-                v.override_cache_control(),
-                v.if_none_match(),
-                v.if_match(),
+                None,
+                &OpWrite::default(),
+                AsyncBody::Empty,
             )?,
-            PresignOperation::Write(_) => {
-                self.core
-                    .s3_put_object_request(path, None, None, None, None, AsyncBody::Empty)?
-            }
         };
 
         self.core.sign_query(&mut req, args.expire()).await?;
@@ -1203,10 +1243,8 @@ mod tests {
             ),
         ];
 
-        let b = S3Builder::default();
-
         for (name, endpoint, bucket, expected) in cases {
-            let region = b.detect_region(endpoint, bucket).await;
+            let region = S3Builder::detect_region(endpoint, bucket).await;
             assert_eq!(region.as_deref(), expected, "{}", name);
         }
     }

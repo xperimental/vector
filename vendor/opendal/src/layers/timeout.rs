@@ -24,7 +24,6 @@ use std::time::Instant;
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::raw::oio::AppendOperation;
 use crate::raw::oio::PageOperation;
 use crate::raw::oio::ReadOperation;
 use crate::raw::oio::WriteOperation;
@@ -35,7 +34,7 @@ use crate::*;
 ///
 /// # Notes
 ///
-/// - For IO operations like `read`, `write`, and `append`, we will set a timeout
+/// - For IO operations like `read`, `write`, we will set a timeout
 ///   for each single IO operation.
 /// - For other operations like `stat`, and `delete`, the timeout is for the whole
 ///   operation.
@@ -147,7 +146,6 @@ impl<A: Accessor> LayeredAccessor for TimeoutAccessor<A> {
     type BlockingReader = A::BlockingReader;
     type Writer = TimeoutWrapper<A::Writer>;
     type BlockingWriter = A::BlockingWriter;
-    type Appender = TimeoutWrapper<A::Appender>;
     type Pager = TimeoutWrapper<A::Pager>;
     type BlockingPager = A::BlockingPager;
 
@@ -173,18 +171,6 @@ impl<A: Accessor> LayeredAccessor for TimeoutAccessor<A> {
             .map_err(|_| {
                 Error::new(ErrorKind::Unexpected, "operation timeout")
                     .with_operation(Operation::Write)
-                    .with_context("timeout", self.timeout.as_secs_f64().to_string())
-                    .set_temporary()
-            })?
-            .map(|(rp, r)| (rp, TimeoutWrapper::new(r, self.timeout, self.speed)))
-    }
-
-    async fn append(&self, path: &str, args: OpAppend) -> Result<(RpAppend, Self::Appender)> {
-        tokio::time::timeout(self.timeout, self.inner.append(path, args))
-            .await
-            .map_err(|_| {
-                Error::new(ErrorKind::Unexpected, "operation timeout")
-                    .with_operation(Operation::Append)
                     .with_context("timeout", self.timeout.as_secs_f64().to_string())
                     .set_temporary()
             })?
@@ -220,6 +206,7 @@ pub struct TimeoutWrapper<R> {
     inner: R,
 
     timeout: Duration,
+    #[allow(dead_code)]
     speed: u64,
 
     start: Option<Instant>,
@@ -235,6 +222,7 @@ impl<R> TimeoutWrapper<R> {
         }
     }
 
+    #[allow(dead_code)]
     fn io_timeout(&self, size: u64) -> Duration {
         let timeout = Duration::from_millis(size * 1000 / self.speed + 1);
 
@@ -336,79 +324,94 @@ impl<R: oio::Read> oio::Read for TimeoutWrapper<R> {
 
 #[async_trait]
 impl<R: oio::Write> oio::Write for TimeoutWrapper<R> {
-    async fn write(&mut self, bs: Bytes) -> Result<()> {
-        let timeout = self.io_timeout(bs.len() as u64);
+    fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
+        match self.start {
+            Some(start) => {
+                if start.elapsed() > self.timeout {
+                    // Clean up the start time before return ready.
+                    self.start = None;
 
-        tokio::time::timeout(timeout, self.inner.write(bs))
-            .await
-            .map_err(|_| {
-                Error::new(ErrorKind::Unexpected, "operation timeout")
+                    return Poll::Ready(Err(Error::new(
+                        ErrorKind::Unexpected,
+                        "operation timeout",
+                    )
                     .with_operation(WriteOperation::Write)
-                    .with_context("timeout", timeout.as_secs_f64().to_string())
-                    .set_temporary()
-            })?
+                    .with_context("timeout", self.timeout.as_secs_f64().to_string())
+                    .set_temporary()));
+                }
+            }
+            None => {
+                self.start = Some(Instant::now());
+            }
+        }
+
+        match self.inner.poll_write(cx, bs) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(v) => {
+                self.start = None;
+                Poll::Ready(v)
+            }
+        }
     }
 
-    async fn sink(&mut self, size: u64, s: oio::Streamer) -> Result<()> {
-        let timeout = self.io_timeout(size);
+    fn poll_abort(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        match self.start {
+            Some(start) => {
+                if start.elapsed() > self.timeout {
+                    // Clean up the start time before return ready.
+                    self.start = None;
 
-        tokio::time::timeout(timeout, self.inner.sink(size, s))
-            .await
-            .map_err(|_| {
-                Error::new(ErrorKind::Unexpected, "operation timeout")
-                    .with_operation(WriteOperation::Sink)
-                    .with_context("timeout", timeout.as_secs_f64().to_string())
-                    .set_temporary()
-            })?
-    }
-
-    async fn abort(&mut self) -> Result<()> {
-        tokio::time::timeout(self.timeout, self.inner.abort())
-            .await
-            .map_err(|_| {
-                Error::new(ErrorKind::Unexpected, "operation timeout")
+                    return Poll::Ready(Err(Error::new(
+                        ErrorKind::Unexpected,
+                        "operation timeout",
+                    )
                     .with_operation(WriteOperation::Abort)
                     .with_context("timeout", self.timeout.as_secs_f64().to_string())
-                    .set_temporary()
-            })?
+                    .set_temporary()));
+                }
+            }
+            None => {
+                self.start = Some(Instant::now());
+            }
+        }
+
+        match self.inner.poll_abort(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(v) => {
+                self.start = None;
+                Poll::Ready(v)
+            }
+        }
     }
 
-    async fn close(&mut self) -> Result<()> {
-        tokio::time::timeout(self.timeout, self.inner.close())
-            .await
-            .map_err(|_| {
-                Error::new(ErrorKind::Unexpected, "operation timeout")
+    fn poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        match self.start {
+            Some(start) => {
+                if start.elapsed() > self.timeout {
+                    // Clean up the start time before return ready.
+                    self.start = None;
+
+                    return Poll::Ready(Err(Error::new(
+                        ErrorKind::Unexpected,
+                        "operation timeout",
+                    )
                     .with_operation(WriteOperation::Close)
                     .with_context("timeout", self.timeout.as_secs_f64().to_string())
-                    .set_temporary()
-            })?
-    }
-}
+                    .set_temporary()));
+                }
+            }
+            None => {
+                self.start = Some(Instant::now());
+            }
+        }
 
-#[async_trait]
-impl<A: oio::Append> oio::Append for TimeoutWrapper<A> {
-    async fn append(&mut self, bs: Bytes) -> Result<()> {
-        let timeout = self.io_timeout(bs.len() as u64);
-
-        tokio::time::timeout(timeout, self.inner.append(bs))
-            .await
-            .map_err(|_| {
-                Error::new(ErrorKind::Unexpected, "operation timeout")
-                    .with_operation(AppendOperation::Append)
-                    .with_context("timeout", timeout.as_secs_f64().to_string())
-                    .set_temporary()
-            })?
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        tokio::time::timeout(self.timeout, self.inner.close())
-            .await
-            .map_err(|_| {
-                Error::new(ErrorKind::Unexpected, "operation timeout")
-                    .with_operation(AppendOperation::Close)
-                    .with_context("timeout", self.timeout.as_secs_f64().to_string())
-                    .set_temporary()
-            })?
+        match self.inner.poll_close(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(v) => {
+                self.start = None;
+                Poll::Ready(v)
+            }
+        }
     }
 }
 

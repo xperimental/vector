@@ -4,7 +4,7 @@
 //! Do not use the functions in this module unless you've read all of their
 //! code. They don't always behave the same way as functions with similar names
 //! in `libc`. Sometimes information about the differences is included in the
-//! Linux documentation under "C library/kernel differences" sections. And, if
+//! Linux documentation under “C library/kernel differences” sections. And, if
 //! there is a libc in the process, these functions may have surprising
 //! interactions with it.
 //!
@@ -89,7 +89,7 @@ pub unsafe fn arm_set_tls(data: *mut c_void) -> io::Result<()> {
     backend::runtime::syscalls::tls::arm_set_tls(data)
 }
 
-/// `prctl(PR_SET_FS, data)`—Set the x86_64 `fs` register.
+/// `prctl(PR_SET_FS, data)`—Set the x86-64 `fs` register.
 ///
 /// # Safety
 ///
@@ -101,7 +101,7 @@ pub unsafe fn set_fs(data: *mut c_void) {
     backend::runtime::syscalls::tls::set_fs(data)
 }
 
-/// Set the x86_64 thread ID address.
+/// Set the x86-64 thread ID address.
 ///
 /// # Safety
 ///
@@ -486,14 +486,14 @@ pub unsafe fn sigtimedwait(set: &Sigset, timeout: Option<Timespec>) -> io::Resul
     backend::runtime::syscalls::sigtimedwait(set, timeout)
 }
 
-/// `getauxval(AT_SECURE)`—Returns the Linux "secure execution" mode.
+/// `getauxval(AT_SECURE)`—Returns the Linux “secure execution” mode.
 ///
-/// Return a boolean value indicating whether "secure execution" mode was
+/// Return a boolean value indicating whether “secure execution” mode was
 /// requested, due to the process having elevated privileges. This includes
 /// whether the `AT_SECURE` AUX value is set, and whether the initial real UID
 /// and GID differ from the initial effective UID and GID.
 ///
-/// The meaning of "secure execution" mode is beyond the scope of this comment.
+/// The meaning of “secure execution” mode is beyond the scope of this comment.
 ///
 /// # References
 ///  - [Linux]
@@ -509,4 +509,17 @@ pub unsafe fn sigtimedwait(set: &Sigset, timeout: Option<Timespec>) -> io::Resul
 #[inline]
 pub fn linux_secure() -> bool {
     backend::param::auxv::linux_secure()
+}
+
+/// `brk(addr)`—Change the location of the “program break”.
+///
+/// # Safety
+///
+/// This is not identical to `brk` in libc. libc `brk` may have bookkeeping
+/// that needs to be kept up to date that this doesn't keep up to date, so
+/// don't use it unless you are implementing libc.
+#[cfg(linux_raw)]
+#[inline]
+pub unsafe fn brk(addr: *mut c_void) -> io::Result<*mut c_void> {
+    backend::runtime::syscalls::brk(addr)
 }

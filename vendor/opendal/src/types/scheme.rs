@@ -31,16 +31,22 @@ use crate::Error;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Scheme {
+    /// [atomicserver][crate::services::Atomicserver]: Atomicserver services.
+    Atomicserver,
     /// [azblob][crate::services::Azblob]: Azure Storage Blob services.
     Azblob,
-    /// [azdfs][crate::services::Azdfs]: Azure Data Lake Storage Gen2.
-    Azdfs,
+    /// [Azdls][crate::services::Azdls]: Azure Data Lake Storage Gen2.
+    Azdls,
     /// [cacache][crate::services::Cacache]: cacache backend support.
     Cacache,
     /// [cos][crate::services::Cos]: Tencent Cloud Object Storage services.
     Cos,
     /// [dashmap][crate::services::Dashmap]: dashmap backend support.
     Dashmap,
+    /// [etcd][crate::services::Etcd]: Etcd Services
+    Etcd,
+    /// [foundationdb][crate::services::Foundationdb]: Foundationdb services.
+    Foundationdb,
     /// [fs][crate::services::Fs]: POSIX alike file system.
     Fs,
     /// [ftp][crate::services::Ftp]: FTP backend.
@@ -76,8 +82,16 @@ pub enum Scheme {
     Dropbox,
     /// [oss][crate::services::Oss]: Aliyun Object Storage Services
     Oss,
+    /// [persy][crate::services::Persy]: persy backend support.
+    Persy,
     /// [redis][crate::services::Redis]: Redis services
     Redis,
+    /// [postgresql][crate::services::Postgresql]: Postgresql services
+    Postgresql,
+    /// [mysql][crate::services::Mysql]: Mysql services
+    Mysql,
+    /// [sqlite][crate::services::Sqlite]: Sqlite services
+    Sqlite,
     /// [rocksdb][crate::services::Rocksdb]: RocksDB services
     Rocksdb,
     /// [s3][crate::services::S3]: AWS S3 alike services.
@@ -98,6 +112,8 @@ pub enum Scheme {
     Webhdfs,
     /// [redb][crate::services::Redb]: Redb Services
     Redb,
+    /// [tikv][crate::services::tikv]: Tikv Services
+    Tikv,
     /// Custom that allow users to implement services outside of OpenDAL.
     ///
     /// # NOTE
@@ -132,13 +148,21 @@ impl FromStr for Scheme {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.to_lowercase();
         match s.as_str() {
+            "atomicserver" => Ok(Scheme::Atomicserver),
             "azblob" => Ok(Scheme::Azblob),
-            "azdfs" => Ok(Scheme::Azdfs),
+            // Notes:
+            //
+            // OpenDAL used to call `azdls` as `azdfs`, we keep it for backward compatibility.
+            // And abfs is widely used in hadoop ecosystem, keep it for easy to use.
+            "azdls" | "azdfs" | "abfs" => Ok(Scheme::Azdls),
             "cacache" => Ok(Scheme::Cacache),
             "cos" => Ok(Scheme::Cos),
             "dashmap" => Ok(Scheme::Dashmap),
+            "dropbox" => Ok(Scheme::Dropbox),
+            "etcd" => Ok(Scheme::Etcd),
             "fs" => Ok(Scheme::Fs),
             "gcs" => Ok(Scheme::Gcs),
+            "gdrive" => Ok(Scheme::Gdrive),
             "ghac" => Ok(Scheme::Ghac),
             "hdfs" => Ok(Scheme::Hdfs),
             "http" | "https" => Ok(Scheme::Http),
@@ -147,12 +171,19 @@ impl FromStr for Scheme {
             "ipmfs" => Ok(Scheme::Ipmfs),
             "memcached" => Ok(Scheme::Memcached),
             "memory" => Ok(Scheme::Memory),
+            "mysql" => Ok(Scheme::Mysql),
+            "sqlite" => Ok(Scheme::Sqlite),
             "mini_moka" => Ok(Scheme::MiniMoka),
             "moka" => Ok(Scheme::Moka),
             "obs" => Ok(Scheme::Obs),
+            "onedrive" => Ok(Scheme::Onedrive),
+            "persy" => Ok(Scheme::Persy),
+            "postgresql" => Ok(Scheme::Postgresql),
+            "redb" => Ok(Scheme::Redb),
             "redis" => Ok(Scheme::Redis),
             "rocksdb" => Ok(Scheme::Rocksdb),
             "s3" => Ok(Scheme::S3),
+            "sftp" => Ok(Scheme::Sftp),
             "sled" => Ok(Scheme::Sled),
             "supabase" => Ok(Scheme::Supabase),
             "oss" => Ok(Scheme::Oss),
@@ -160,6 +191,7 @@ impl FromStr for Scheme {
             "wasabi" => Ok(Scheme::Wasabi),
             "webdav" => Ok(Scheme::Webdav),
             "webhdfs" => Ok(Scheme::Webhdfs),
+            "tikv" => Ok(Scheme::Tikv),
             _ => Ok(Scheme::Custom(Box::leak(s.into_boxed_str()))),
         }
     }
@@ -168,16 +200,19 @@ impl FromStr for Scheme {
 impl From<Scheme> for &'static str {
     fn from(v: Scheme) -> Self {
         match v {
+            Scheme::Atomicserver => "atomicserver",
             Scheme::Azblob => "azblob",
-            Scheme::Azdfs => "azdfs",
+            Scheme::Azdls => "Azdls",
             Scheme::Cacache => "cacache",
             Scheme::Cos => "cos",
             Scheme::Dashmap => "dashmap",
+            Scheme::Etcd => "etcd",
             Scheme::Fs => "fs",
             Scheme::Gcs => "gcs",
             Scheme::Ghac => "ghac",
             Scheme::Hdfs => "hdfs",
             Scheme::Http => "http",
+            Scheme::Foundationdb => "foundationdb",
             Scheme::Ftp => "ftp",
             Scheme::Ipfs => "ipfs",
             Scheme::Ipmfs => "ipmfs",
@@ -187,6 +222,9 @@ impl From<Scheme> for &'static str {
             Scheme::Moka => "moka",
             Scheme::Obs => "obs",
             Scheme::Onedrive => "onedrive",
+            Scheme::Persy => "persy",
+            Scheme::Postgresql => "postgresql",
+            Scheme::Mysql => "mysql",
             Scheme::Gdrive => "gdrive",
             Scheme::Dropbox => "dropbox",
             Scheme::Redis => "redis",
@@ -201,6 +239,8 @@ impl From<Scheme> for &'static str {
             Scheme::Webdav => "webdav",
             Scheme::Webhdfs => "webhdfs",
             Scheme::Redb => "redb",
+            Scheme::Tikv => "tikv",
+            Scheme::Sqlite => "sqlite",
             Scheme::Custom(v) => v,
         }
     }

@@ -38,6 +38,8 @@ use crate::*;
 pub struct HdfsBuilder {
     root: Option<String>,
     name_node: Option<String>,
+    kerberos_ticket_cache_path: Option<String>,
+    user: Option<String>,
 }
 
 impl HdfsBuilder {
@@ -68,6 +70,24 @@ impl HdfsBuilder {
 
         self
     }
+
+    /// Set kerberos_ticket_cache_path of this backend
+    ///
+    /// This should be configured when kerberos is enabled.
+    pub fn kerberos_ticket_cache_path(&mut self, kerberos_ticket_cache_path: &str) -> &mut Self {
+        if !kerberos_ticket_cache_path.is_empty() {
+            self.kerberos_ticket_cache_path = Some(kerberos_ticket_cache_path.to_string())
+        }
+        self
+    }
+
+    /// Set user of this backend
+    pub fn user(&mut self, user: &str) -> &mut Self {
+        if !user.is_empty() {
+            self.user = Some(user.to_string())
+        }
+        self
+    }
 }
 
 impl Builder for HdfsBuilder {
@@ -79,6 +99,9 @@ impl Builder for HdfsBuilder {
 
         map.get("root").map(|v| builder.root(v));
         map.get("name_node").map(|v| builder.name_node(v));
+        map.get("kerberos_ticket_cache_path")
+            .map(|v| builder.kerberos_ticket_cache_path(v));
+        map.get("user").map(|v| builder.user(v));
 
         builder
     }
@@ -97,7 +120,15 @@ impl Builder for HdfsBuilder {
         let root = normalize_root(&self.root.take().unwrap_or_default());
         debug!("backend use root {}", root);
 
-        let client = hdrs::Client::connect(name_node).map_err(parse_io_error)?;
+        let mut builder = hdrs::ClientBuilder::new(name_node);
+        if let Some(ticket_cache_path) = &self.kerberos_ticket_cache_path {
+            builder = builder.with_kerberos_ticket_cache_path(ticket_cache_path.as_str());
+        }
+        if let Some(user) = &self.user {
+            builder = builder.with_user(user.as_str());
+        }
+
+        let client = builder.connect().map_err(parse_io_error)?;
 
         // Create root dir if not exist.
         if let Err(e) = client.metadata(&root) {
@@ -129,11 +160,10 @@ unsafe impl Sync for HdfsBackend {}
 
 #[async_trait]
 impl Accessor for HdfsBackend {
-    type Reader = oio::into_reader::FdReader<hdrs::AsyncFile>;
-    type BlockingReader = oio::into_blocking_reader::FdReader<hdrs::File>;
+    type Reader = oio::FromFileReader<hdrs::AsyncFile>;
+    type BlockingReader = oio::FromFileReader<hdrs::File>;
     type Writer = HdfsWriter<hdrs::AsyncFile>;
     type BlockingWriter = HdfsWriter<hdrs::File>;
-    type Appender = ();
     type Pager = Option<HdfsPager>;
     type BlockingPager = Option<HdfsPager>;
 
@@ -141,7 +171,7 @@ impl Accessor for HdfsBackend {
         let mut am = AccessorInfo::default();
         am.set_scheme(Scheme::Hdfs)
             .set_root(&self.root)
-            .set_capability(Capability {
+            .set_native_capability(Capability {
                 stat: true,
 
                 read: true,
@@ -149,6 +179,9 @@ impl Accessor for HdfsBackend {
                 read_with_range: true,
 
                 write: true,
+                // TODO: wait for https://github.com/apache/incubator-opendal/pull/2715
+                write_can_append: false,
+
                 create_dir: true,
                 delete: true,
 
@@ -199,14 +232,14 @@ impl Accessor for HdfsBackend {
             (None, None) => (0, meta.len()),
         };
 
-        let mut r = oio::into_reader::from_fd(f, start, end);
+        let mut r = oio::into_read_from_file(f, start, end);
         // Rewind to make sure we are on the correct offset.
         r.seek(SeekFrom::Start(0)).await?;
 
         Ok((RpRead::new(end - start), r))
     }
 
-    async fn write(&self, path: &str, _: OpWrite) -> Result<(RpWrite, Self::Writer)> {
+    async fn write(&self, path: &str, op: OpWrite) -> Result<(RpWrite, Self::Writer)> {
         let p = build_rooted_abs_path(&self.root, path);
 
         let parent = PathBuf::from(&p)
@@ -224,14 +257,15 @@ impl Accessor for HdfsBackend {
             .create_dir(&parent.to_string_lossy())
             .map_err(parse_io_error)?;
 
-        let f = self
-            .client
-            .open_file()
-            .create(true)
-            .write(true)
-            .async_open(&p)
-            .await
-            .map_err(parse_io_error)?;
+        let mut open_options = self.client.open_file();
+        open_options.create(true);
+        if op.append() {
+            open_options.append(true);
+        } else {
+            open_options.write(true);
+        }
+
+        let f = open_options.async_open(&p).await.map_err(parse_io_error)?;
 
         Ok((RpWrite::new(), HdfsWriter::new(f)))
     }
@@ -336,7 +370,7 @@ impl Accessor for HdfsBackend {
             (None, None) => (0, meta.len()),
         };
 
-        let mut r = oio::into_blocking_reader::from_fd(f, start, end);
+        let mut r = oio::into_read_from_file(f, start, end);
         // Rewind to make sure we are on the correct offset.
         r.seek(SeekFrom::Start(0))?;
 

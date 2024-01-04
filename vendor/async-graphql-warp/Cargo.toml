@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 name = "async-graphql-warp"
-version = "6.0.7"
+version = "6.0.9"
 authors = [
     "sunli <scott_s829@163.com>",
     "Koxiaet",
@@ -33,7 +33,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/async-graphql/async-graphql"
 
 [dependencies.async-graphql]
-version = "6.0.7"
+version = "6.0.9"
 default-features = false
 
 [dependencies.futures-util]

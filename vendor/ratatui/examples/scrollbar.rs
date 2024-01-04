@@ -57,36 +57,30 @@ fn run_app<B: Backend>(
     loop {
         terminal.draw(|f| ui(f, &mut app))?;
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => return Ok(()),
                     KeyCode::Char('j') => {
                         app.vertical_scroll = app.vertical_scroll.saturating_add(1);
-                        app.vertical_scroll_state = app
-                            .vertical_scroll_state
-                            .position(app.vertical_scroll as u16);
+                        app.vertical_scroll_state =
+                            app.vertical_scroll_state.position(app.vertical_scroll);
                     }
                     KeyCode::Char('k') => {
                         app.vertical_scroll = app.vertical_scroll.saturating_sub(1);
-                        app.vertical_scroll_state = app
-                            .vertical_scroll_state
-                            .position(app.vertical_scroll as u16);
+                        app.vertical_scroll_state =
+                            app.vertical_scroll_state.position(app.vertical_scroll);
                     }
                     KeyCode::Char('h') => {
                         app.horizontal_scroll = app.horizontal_scroll.saturating_sub(1);
-                        app.horizontal_scroll_state = app
-                            .horizontal_scroll_state
-                            .position(app.horizontal_scroll as u16);
+                        app.horizontal_scroll_state =
+                            app.horizontal_scroll_state.position(app.horizontal_scroll);
                     }
                     KeyCode::Char('l') => {
                         app.horizontal_scroll = app.horizontal_scroll.saturating_add(1);
-                        app.horizontal_scroll_state = app
-                            .horizontal_scroll_state
-                            .position(app.horizontal_scroll as u16);
+                        app.horizontal_scroll_state =
+                            app.horizontal_scroll_state.position(app.horizontal_scroll);
                     }
                     _ => {}
                 }
@@ -98,7 +92,7 @@ fn run_app<B: Backend>(
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+fn ui(f: &mut Frame, app: &mut App) {
     let size = f.size();
 
     // Words made "loooong" to demonstrate line breaking.
@@ -111,16 +105,13 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Min(1),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-            ]
-            .as_ref(),
-        )
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
         .split(size);
 
     let text = vec![
@@ -128,7 +119,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         Line::from("This is a line   ".red()),
         Line::from("This is a line".on_dark_gray()),
         Line::from("This is a longer line".crossed_out()),
-        Line::from(long_line.reset()),
+        Line::from(long_line.clone()),
         Line::from("This is a line".reset()),
         Line::from(vec![
             Span::raw("Masked text: "),
@@ -141,7 +132,7 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         Line::from("This is a line   ".red()),
         Line::from("This is a line".on_dark_gray()),
         Line::from("This is a longer line".crossed_out()),
-        Line::from(long_line.reset()),
+        Line::from(long_line.clone()),
         Line::from("This is a line".reset()),
         Line::from(vec![
             Span::raw("Masked text: "),
@@ -151,10 +142,8 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             ),
         ]),
     ];
-    app.vertical_scroll_state = app.vertical_scroll_state.content_length(text.len() as u16);
-    app.horizontal_scroll_state = app
-        .horizontal_scroll_state
-        .content_length(long_line.len() as u16);
+    app.vertical_scroll_state = app.vertical_scroll_state.content_length(text.len());
+    app.horizontal_scroll_state = app.horizontal_scroll_state.content_length(long_line.len());
 
     let create_block = |title| {
         Block::default()

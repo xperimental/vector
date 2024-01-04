@@ -18,13 +18,17 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use http::StatusCode;
 
 use super::core::AzblobCore;
 use super::error::parse_error;
 use crate::raw::*;
 use crate::*;
+
+const X_MS_BLOB_TYPE: &str = "x-ms-blob-type";
+
+pub type AzblobWriters =
+    oio::TwoWaysWriter<oio::OneShotWriter<AzblobWriter>, oio::AppendObjectWriter<AzblobWriter>>;
 
 pub struct AzblobWriter {
     core: Arc<AzblobCore>,
@@ -37,14 +41,17 @@ impl AzblobWriter {
     pub fn new(core: Arc<AzblobCore>, op: OpWrite, path: String) -> Self {
         AzblobWriter { core, op, path }
     }
+}
 
-    async fn write_oneshot(&self, size: u64, body: AsyncBody) -> Result<()> {
+#[async_trait]
+impl oio::OneShotWrite for AzblobWriter {
+    async fn write_once(&self, bs: &dyn oio::WriteBuf) -> Result<()> {
+        let bs = oio::ChunkedBytes::from_vec(bs.vectored_bytes(bs.remaining()));
         let mut req = self.core.azblob_put_blob_request(
             &self.path,
-            Some(size),
-            self.op.content_type(),
-            self.op.cache_control(),
-            body,
+            Some(bs.len() as u64),
+            &self.op,
+            AsyncBody::ChunkedBytes(bs),
         )?;
 
         self.core.sign(&mut req).await?;
@@ -64,21 +71,68 @@ impl AzblobWriter {
 }
 
 #[async_trait]
-impl oio::Write for AzblobWriter {
-    async fn write(&mut self, bs: Bytes) -> Result<()> {
-        self.write_oneshot(bs.len() as u64, AsyncBody::Bytes(bs))
-            .await
+impl oio::AppendObjectWrite for AzblobWriter {
+    async fn offset(&self) -> Result<u64> {
+        let resp = self
+            .core
+            .azblob_get_blob_properties(&self.path, &OpStat::default())
+            .await?;
+
+        let status = resp.status();
+
+        match status {
+            StatusCode::OK => {
+                let headers = resp.headers();
+                let blob_type = headers.get(X_MS_BLOB_TYPE).and_then(|v| v.to_str().ok());
+                if blob_type != Some("AppendBlob") {
+                    return Err(Error::new(
+                        ErrorKind::ConditionNotMatch,
+                        "the blob is not an appendable blob.",
+                    ));
+                }
+
+                Ok(parse_content_length(headers)?.unwrap_or_default())
+            }
+            StatusCode::NOT_FOUND => {
+                let mut req = self
+                    .core
+                    .azblob_init_appendable_blob_request(&self.path, &self.op)?;
+
+                self.core.sign(&mut req).await?;
+
+                let resp = self.core.client.send(req).await?;
+
+                let status = resp.status();
+                match status {
+                    StatusCode::CREATED => {
+                        // do nothing
+                    }
+                    _ => {
+                        return Err(parse_error(resp).await?);
+                    }
+                }
+                Ok(0)
+            }
+            _ => Err(parse_error(resp).await?),
+        }
     }
 
-    async fn sink(&mut self, size: u64, s: oio::Streamer) -> Result<()> {
-        self.write_oneshot(size, AsyncBody::Stream(s)).await
-    }
+    async fn append(&self, offset: u64, size: u64, body: AsyncBody) -> Result<()> {
+        let mut req = self
+            .core
+            .azblob_append_blob_request(&self.path, offset, size, body)?;
 
-    async fn abort(&mut self) -> Result<()> {
-        Ok(())
-    }
+        self.core.sign(&mut req).await?;
 
-    async fn close(&mut self) -> Result<()> {
-        Ok(())
+        let resp = self.core.send(req).await?;
+
+        let status = resp.status();
+        match status {
+            StatusCode::CREATED => {
+                resp.into_body().consume().await?;
+                Ok(())
+            }
+            _ => Err(parse_error(resp).await?),
+        }
     }
 }

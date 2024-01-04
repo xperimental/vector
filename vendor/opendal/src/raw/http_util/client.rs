@@ -19,6 +19,7 @@ use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::mem;
 use std::str::FromStr;
+use std::time::Duration;
 
 use futures::TryStreamExt;
 use http::Request;
@@ -27,10 +28,12 @@ use http::Response;
 use super::body::IncomingAsyncBody;
 use super::parse_content_length;
 use super::AsyncBody;
-use crate::raw::oio::into_stream;
+use crate::raw::*;
 use crate::Error;
 use crate::ErrorKind;
 use crate::Result;
+
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// HttpClient that used across opendal.
 #[derive(Clone)]
@@ -59,6 +62,8 @@ impl HttpClient {
         builder = builder.no_brotli();
         // Make sure we don't enable auto deflate decompress.
         builder = builder.no_deflate();
+        // Make sure we don't wait a connection establishment forever.
+        builder = builder.connect_timeout(DEFAULT_CONNECT_TIMEOUT);
 
         #[cfg(feature = "trust-dns")]
         let builder = builder.trust_dns(true);
@@ -96,6 +101,7 @@ impl HttpClient {
         req_builder = match body {
             AsyncBody::Empty => req_builder.body(reqwest::Body::from("")),
             AsyncBody::Bytes(bs) => req_builder.body(reqwest::Body::from(bs)),
+            AsyncBody::ChunkedBytes(bs) => req_builder.body(reqwest::Body::wrap_stream(bs)),
             AsyncBody::Stream(s) => req_builder.body(reqwest::Body::wrap_stream(s)),
         };
 
@@ -150,10 +156,7 @@ impl HttpClient {
                 .set_source(err)
         });
 
-        let body = IncomingAsyncBody::new(
-            Box::new(into_stream::from_futures_stream(stream)),
-            content_length,
-        );
+        let body = IncomingAsyncBody::new(Box::new(oio::into_stream(stream)), content_length);
 
         let resp = hr.body(body).expect("response must build succeed");
 

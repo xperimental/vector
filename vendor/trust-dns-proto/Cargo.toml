@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.64.0"
 name = "trust-dns-proto"
-version = "0.23.1"
+version = "0.23.2"
 authors = ["The contributors to Trust-DNS"]
 description = """
 Trust-DNS is a safe and secure DNS library. This is the foundational DNS protocol library for all Trust-DNS projects.

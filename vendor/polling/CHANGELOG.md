@@ -1,3 +1,31 @@
+# Version 3.3.0
+
+- Automatically restarts polling when `ErrorKind::Interrupted` is returned, rather than relying on the user to handle it. (#164)
+- Fix bad link in documentation for `Poller::wait()`. (#163)
+
+# Version 3.2.0
+
+- The `kqueue` backend previously allowed the following operations that other backends forbid. Now these operations result in an error: (#153)
+  - Inserting a source that was already inserted.
+  - Modifying/deleting a source that was not already inserted.
+- Add support for Haiku OS. (#154)
+
+# Version 3.1.0
+
+- Add an `Event::new()` constructor to simplify creating `Event`s. (#149)
+
+# Version 3.0.0
+
+- Replace `libc` in all backends with the `rustix` crate (#108).
+- Use `tracing` instead of `log` for logging (#119).
+- **Breaking:** Rework the API to use I/O safety. Note that this makes several previously safe functions unsafe. (#123)
+- Add support for the ESP-IDF platform. (#128)
+- **Breaking:** Make `Event` partially opaque, and create a new `Events` struct for holding events. (#133)
+- Add support for running `polling` in Linux containers without `eventfd` available. (#134)
+- Specify the behavior when registered in multiple `Poller`s. (#136)
+- **Breaking:** Use `c_int` from the standard library in `polling::os::kqueue` instead of defining our own. (#143)
+- **Breaking:** Remove the useless `std` feature. (#147)
+
 # Version 2.8.0
 
 - Add functionality for posting events to the IOCP. (#101)

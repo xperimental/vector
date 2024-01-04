@@ -46,12 +46,15 @@ use bsd as platform;
 /// controlling their behavior, some of which are proprietary.
 ///
 /// This crate exposes many other `ioctl` interfaces with safe and idiomatic
-/// wrappers, like [`ioctl_fionbio`](crate::io::ioctl_fionbio) and
-/// [`ioctl_fionread`](crate::io::ioctl_fionread). It is recommended to use
-/// those instead of this function, as they are safer and more idiomatic.
-/// For other cases, implement the [`Ioctl`] API and pass it to this function.
+/// wrappers, like [`ioctl_fionbio`] and [`ioctl_fionread`]. It is recommended
+/// to use those instead of this function, as they are safer and more
+/// idiomatic. For other cases, implement the [`Ioctl`] API and pass it to this
+/// function.
 ///
 /// See documentation for [`Ioctl`] for more information.
+///
+/// [`ioctl_fionbio`]: crate::io::ioctl_fionbio
+/// [`ioctl_fionread`]: crate::io::ioctl_fionread
 ///
 /// # Safety
 ///
@@ -204,7 +207,7 @@ impl Opcode {
         Self { raw }
     }
 
-    /// Create a new opcode from a direction, group, number and size.
+    /// Create a new opcode from a direction, group, number, and size.
     ///
     /// This corresponds to the C macro `_IOC(direction, group, number, size)`
     #[cfg(any(linux_kernel, bsd))]
@@ -227,8 +230,8 @@ impl Opcode {
         ))
     }
 
-    /// Create a new non-mutating opcode from a group, a number and the type of
-    /// data.
+    /// Create a new non-mutating opcode from a group, a number, and the type
+    /// of data.
     ///
     /// This corresponds to the C macro `_IO(group, number)` when `T` is zero
     /// sized.
@@ -325,8 +328,14 @@ type _RawOpcode = c::c_int;
 #[cfg(all(not(linux_raw), target_os = "android"))]
 type _RawOpcode = c::c_int;
 
-// BSD, Haiku, Hurd, and Redox use `unsigned long`.
-#[cfg(any(bsd, target_os = "redox", target_os = "haiku", target_os = "hurd"))]
+// BSD, Haiku, Hurd, Redox, and Vita use `unsigned long`.
+#[cfg(any(
+    bsd,
+    target_os = "redox",
+    target_os = "haiku",
+    target_os = "hurd",
+    target_os = "vita"
+))]
 type _RawOpcode = c::c_ulong;
 
 // AIX, Emscripten, Fuchsia, Solaris, and WASI use a `int`.

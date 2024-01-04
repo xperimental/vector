@@ -40,6 +40,9 @@ use crate::*;
 
 /// SFTP services support. (only works on unix)
 ///
+/// If you are interested in working on windows, please refer to [this](https://github.com/apache/incubator-opendal/issues/2963) issue.
+/// Welcome to leave your comments or make contributions.
+///
 /// Warning: Maximum number of file holdings is depending on the remote system configuration.
 ///
 /// For example, the default value is 255 in macOS, and 1024 in linux. If you want to open
@@ -225,7 +228,6 @@ impl Accessor for SftpBackend {
     type BlockingReader = ();
     type Writer = SftpWriter;
     type BlockingWriter = ();
-    type Appender = SftpWriter;
     type Pager = Option<SftpPager>;
     type BlockingPager = ();
 
@@ -233,7 +235,7 @@ impl Accessor for SftpBackend {
         let mut am = AccessorInfo::default();
         am.set_root(self.root.as_str())
             .set_scheme(Scheme::Sftp)
-            .set_capability(Capability {
+            .set_native_capability(Capability {
                 stat: true,
 
                 read: true,
@@ -241,7 +243,8 @@ impl Accessor for SftpBackend {
                 read_can_seek: true,
 
                 write: true,
-                write_without_content_length: true,
+                write_can_multi: true,
+
                 create_dir: true,
                 delete: true,
 
@@ -251,7 +254,6 @@ impl Accessor for SftpBackend {
 
                 copy: self.copyable,
                 rename: true,
-                append: true,
 
                 ..Default::default()
             });
@@ -320,23 +322,7 @@ impl Accessor for SftpBackend {
         Ok((RpRead::new(end - start), r))
     }
 
-    async fn write(&self, path: &str, _: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        if let Some((dir, _)) = path.rsplit_once('/') {
-            self.create_dir(dir, OpCreateDir::default()).await?;
-        }
-
-        let client = self.connect().await?;
-
-        let mut fs = client.fs();
-        fs.set_cwd(&self.root);
-        let path = fs.canonicalize(path).await?;
-
-        let file = client.create(&path).await?;
-
-        Ok((RpWrite::new(), SftpWriter::new(file)))
-    }
-
-    async fn append(&self, path: &str, _: OpAppend) -> Result<(RpAppend, Self::Appender)> {
+    async fn write(&self, path: &str, op: OpWrite) -> Result<(RpWrite, Self::Writer)> {
         if let Some((dir, _)) = path.rsplit_once('/') {
             self.create_dir(dir, OpCreateDir::default()).await?;
         }
@@ -348,11 +334,16 @@ impl Accessor for SftpBackend {
         let path = fs.canonicalize(path).await?;
 
         let mut option = client.options();
-        option.append(true).create(true);
+        option.create(true);
+        if op.append() {
+            option.append(true);
+        } else {
+            option.write(true);
+        }
 
         let file = option.open(path).await?;
 
-        Ok((RpAppend::new(), SftpWriter::new(file)))
+        Ok((RpWrite::new(), SftpWriter::new(file)))
     }
 
     async fn copy(&self, from: &str, to: &str, _: OpCopy) -> Result<RpCopy> {

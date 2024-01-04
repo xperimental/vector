@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.60.0"
+rust-version = "1.64.0"
 name = "console-subscriber"
-version = "0.1.10"
+version = "0.2.0"
 authors = [
     "Eliza Weisman <eliza@buoyant.io>",
     "Tokio Contributors <team@tokio.rs>",
@@ -46,7 +46,7 @@ rustdoc-args = [
 ]
 
 [dependencies.console-api]
-version = "0.5.0"
+version = "0.6.0"
 features = ["transport"]
 
 [dependencies.crossbeam-channel]
@@ -55,7 +55,7 @@ version = "0.5"
 [dependencies.crossbeam-utils]
 version = "0.8.7"
 
-[dependencies.futures]
+[dependencies.futures-task]
 version = "0.3"
 default-features = false
 
@@ -73,7 +73,7 @@ optional = true
 package = "parking_lot"
 
 [dependencies.prost-types]
-version = "0.11.0"
+version = "0.12.0"
 
 [dependencies.serde]
 version = "1"
@@ -99,7 +99,7 @@ version = "0.1"
 features = ["net"]
 
 [dependencies.tonic]
-version = "0.9"
+version = "0.10"
 features = ["transport"]
 
 [dependencies.tracing]
@@ -109,7 +109,7 @@ version = "0.1.26"
 version = "0.1.24"
 
 [dependencies.tracing-subscriber]
-version = "0.3.11"
+version = "0.3.17"
 features = [
     "fmt",
     "registry",
@@ -125,6 +125,10 @@ features = [
     "full",
     "rt-multi-thread",
 ]
+
+[dev-dependencies.tower]
+version = "0.4"
+default-features = false
 
 [features]
 default = ["env-filter"]

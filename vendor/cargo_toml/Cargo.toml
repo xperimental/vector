@@ -13,9 +13,15 @@
 edition = "2021"
 rust-version = "1.66"
 name = "cargo_toml"
-version = "0.16.3"
+version = "0.17.0"
 authors = ["Kornel <kornel@geekhood.net>"]
 exclude = ["tests"]
+include = [
+    "src/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+]
 description = "`Cargo.toml` struct definitions for parsing with Serde"
 homepage = "https://lib.rs/cargo_toml"
 documentation = "https://docs.rs/cargo_toml"
