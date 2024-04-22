@@ -3,7 +3,7 @@ mod tests;
 mod unit_test_components;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -15,6 +15,11 @@ use tokio::sync::{
     Mutex,
 };
 use uuid::Uuid;
+use vrl::{
+    compiler::{state::RuntimeState, Context, TargetValue, TimeZone},
+    diagnostic::Formatter,
+    value,
+};
 
 pub use self::unit_test_components::{
     UnitTestSinkCheck, UnitTestSinkConfig, UnitTestSinkResult, UnitTestSourceConfig,
@@ -27,7 +32,7 @@ use crate::{
         self, loading, ComponentKey, Config, ConfigBuilder, ConfigPath, SinkOuter, SourceOuter,
         TestDefinition, TestInput, TestInputValue, TestOutput,
     },
-    event::{Event, LogEvent, Value},
+    event::{Event, EventMetadata, LogEvent, Value},
     signal,
     topology::{builder::TopologyPieces, RunningTopology},
 };
@@ -211,15 +216,18 @@ impl UnitTestBuildMetadata {
         Ok(inputs
             .into_iter()
             .map(|(insert_at, events)| {
-                let mut source_config = template_sources.remove(&insert_at).unwrap_or_else(|| {
-                    // At this point, all inputs should have been validated to
-                    // correspond with valid transforms, and all valid transforms
-                    // have a source attached.
-                    panic!(
-                        "Invalid input: cannot insert at {:?}",
-                        insert_at.to_string()
-                    )
-                });
+                let mut source_config =
+                    template_sources
+                        .shift_remove(&insert_at)
+                        .unwrap_or_else(|| {
+                            // At this point, all inputs should have been validated to
+                            // correspond with valid transforms, and all valid transforms
+                            // have a source attached.
+                            panic!(
+                                "Invalid input: cannot insert at {:?}",
+                                insert_at.to_string()
+                            )
+                        });
                 source_config.events.extend(events);
                 let id: &str = self
                     .source_ids
@@ -419,7 +427,7 @@ async fn build_unit_test(
     }
     let config = config_builder.build()?;
     let diff = config::ConfigDiff::initial(&config);
-    let pieces = TopologyPieces::build(&config, &diff, HashMap::new()).await?;
+    let pieces = TopologyPieces::build(&config, &diff, HashMap::new(), Default::default()).await?;
 
     Ok(UnitTest {
         name: test.name,
@@ -557,6 +565,36 @@ fn build_input_event(input: &TestInput) -> Result<Event, String> {
             Some(v) => Ok(Event::Log(LogEvent::from_str_legacy(v.clone()))),
             None => Err("input type 'raw' requires the field 'value'".to_string()),
         },
+        "vrl" => {
+            if let Some(source) = &input.source {
+                let fns = vrl::stdlib::all();
+                let result = vrl::compiler::compile(source, &fns)
+                    .map_err(|e| Formatter::new(source, e.clone()).to_string())?;
+
+                let mut target = TargetValue {
+                    value: value!({}),
+                    metadata: value::Value::Object(BTreeMap::new()),
+                    secrets: value::Secrets::default(),
+                };
+
+                let mut state = RuntimeState::default();
+                let timezone = TimeZone::default();
+                let mut ctx = Context::new(&mut target, &mut state, &timezone);
+
+                result
+                    .program
+                    .resolve(&mut ctx)
+                    .map(|_| {
+                        Event::Log(LogEvent::from_parts(
+                            target.value.clone(),
+                            EventMetadata::default_with_value(target.metadata.clone()),
+                        ))
+                    })
+                    .map_err(|e| e.to_string())
+            } else {
+                Err("input type 'vrl' requires the field 'source'".to_string())
+            }
+        }
         "log" => {
             if let Some(log_fields) = &input.log_fields {
                 let mut event = LogEvent::from_str_legacy("");

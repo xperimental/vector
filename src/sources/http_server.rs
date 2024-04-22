@@ -2,7 +2,7 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use bytes::{Bytes, BytesMut};
 use chrono::Utc;
-use http::{StatusCode, Uri};
+use http::StatusCode;
 use http_serde;
 use tokio_util::codec::Decoder as _;
 use vrl::value::{kind::Collection, Kind};
@@ -22,13 +22,12 @@ use vector_lib::{
 
 use crate::{
     codecs::{Decoder, DecodingConfig},
-    components::validation::*,
     config::{
         GenerateConfig, Resource, SourceAcknowledgementsConfig, SourceConfig, SourceContext,
         SourceOutput,
     },
     event::{Event, Value},
-    register_validatable_component,
+    http::KeepaliveConfig,
     serde::{bool_or_struct, default_decoding},
     sources::util::{
         http::{add_query_parameters, HttpMethod},
@@ -88,10 +87,16 @@ pub struct SimpleHttpConfig {
 
     /// A list of HTTP headers to include in the log event.
     ///
+    /// Accepts the wildcard (`*`) character for headers matching a specified pattern.
+    ///
+    /// Specifying "*" results in all headers included in the log event.
+    ///
     /// These override any values included in the JSON payload with conflicting names.
     #[serde(default)]
     #[configurable(metadata(docs::examples = "User-Agent"))]
     #[configurable(metadata(docs::examples = "X-My-Custom-Header"))]
+    #[configurable(metadata(docs::examples = "X-*"))]
+    #[configurable(metadata(docs::examples = "*"))]
     headers: Vec<String>,
 
     /// A list of URL query parameters to include in the log event.
@@ -154,6 +159,10 @@ pub struct SimpleHttpConfig {
     #[configurable(metadata(docs::hidden))]
     #[serde(default)]
     log_namespace: Option<bool>,
+
+    #[configurable(derived)]
+    #[serde(default)]
+    keepalive: KeepaliveConfig,
 }
 
 impl SimpleHttpConfig {
@@ -256,35 +265,12 @@ impl Default for SimpleHttpConfig {
             decoding: Some(default_decoding()),
             acknowledgements: SourceAcknowledgementsConfig::default(),
             log_namespace: None,
+            keepalive: KeepaliveConfig::default(),
         }
     }
 }
 
 impl_generate_config_from_default!(SimpleHttpConfig);
-
-impl ValidatableComponent for SimpleHttpConfig {
-    fn validation_configuration() -> ValidationConfiguration {
-        let config = Self {
-            decoding: Some(DeserializerConfig::Json(Default::default())),
-            ..Default::default()
-        };
-
-        let listen_addr_http = format!("http://{}/", config.address);
-        let uri = Uri::try_from(&listen_addr_http).expect("should not fail to parse URI");
-
-        let external_resource = ExternalResource::new(
-            ResourceDirection::Push,
-            HttpResourceConfig::from_parts(uri, Some(config.method.into())),
-            config
-                .get_decoding_config()
-                .expect("should not fail to get decoding config"),
-        );
-
-        ValidationConfiguration::from_source(Self::NAME, config, Some(external_resource))
-    }
-}
-
-register_validatable_component!(SimpleHttpConfig);
 
 const fn default_http_method() -> HttpMethod {
     HttpMethod::Post
@@ -323,6 +309,21 @@ fn remove_duplicates(mut list: Vec<String>, list_name: &str) -> Vec<String> {
     list
 }
 
+#[derive(Clone)]
+enum HttpConfigParamKind {
+    Glob(glob::Pattern),
+    Exact(String),
+}
+
+fn build_param_matcher(list: &[String]) -> crate::Result<Vec<HttpConfigParamKind>> {
+    list.iter()
+        .map(|s| match s.contains('*') {
+            true => Ok(HttpConfigParamKind::Glob(glob::Pattern::new(s)?)),
+            false => Ok(HttpConfigParamKind::Exact(s.to_string())),
+        })
+        .collect::<crate::Result<Vec<HttpConfigParamKind>>>()
+}
+
 #[async_trait::async_trait]
 #[typetag::serde(name = "http_server")]
 impl SourceConfig for SimpleHttpConfig {
@@ -331,7 +332,7 @@ impl SourceConfig for SimpleHttpConfig {
         let log_namespace = cx.log_namespace(self.log_namespace);
 
         let source = SimpleHttpSource {
-            headers: remove_duplicates(self.headers.clone(), "headers"),
+            headers: build_param_matcher(&remove_duplicates(self.headers.clone(), "headers"))?,
             query_parameters: remove_duplicates(self.query_parameters.clone(), "query_parameters"),
             path_key: self.path_key.clone(),
             decoder,
@@ -347,6 +348,7 @@ impl SourceConfig for SimpleHttpConfig {
             &self.auth,
             cx,
             self.acknowledgements,
+            self.keepalive.clone(),
         )
     }
 
@@ -377,7 +379,7 @@ impl SourceConfig for SimpleHttpConfig {
 
 #[derive(Clone)]
 struct SimpleHttpSource {
-    headers: Vec<String>,
+    headers: Vec<HttpConfigParamKind>,
     query_parameters: Vec<String>,
     path_key: OptionalValuePath,
     decoder: Decoder,
@@ -407,17 +409,48 @@ impl HttpSource for SimpleHttpSource {
                         request_path.to_owned(),
                     );
 
-                    // add each header to each event
-                    for header_name in &self.headers {
-                        let value = headers_config.get(header_name).map(HeaderValue::as_bytes);
+                    for h in &self.headers {
+                        match h {
+                            // Add each non-wildcard containing header that was specified
+                            // in the `headers` config option to the event if an exact match
+                            // is found.
+                            HttpConfigParamKind::Exact(header_name) => {
+                                let value =
+                                    headers_config.get(header_name).map(HeaderValue::as_bytes);
 
-                        self.log_namespace.insert_source_metadata(
-                            SimpleHttpConfig::NAME,
-                            log,
-                            Some(LegacyKey::InsertIfEmpty(path!(header_name))),
-                            path!("headers", header_name),
-                            Value::from(value.map(Bytes::copy_from_slice)),
-                        );
+                                self.log_namespace.insert_source_metadata(
+                                    SimpleHttpConfig::NAME,
+                                    log,
+                                    Some(LegacyKey::InsertIfEmpty(path!(header_name))),
+                                    path!("headers", header_name),
+                                    Value::from(value.map(Bytes::copy_from_slice)),
+                                );
+                            }
+                            // Add all headers that match against wildcard pattens specified
+                            // in the `headers` config option to the event.
+                            HttpConfigParamKind::Glob(header_pattern) => {
+                                for header_name in headers_config.keys() {
+                                    if header_pattern.matches_with(
+                                        header_name.as_str(),
+                                        glob::MatchOptions::default(),
+                                    ) {
+                                        let value = headers_config
+                                            .get(header_name)
+                                            .map(HeaderValue::as_bytes);
+
+                                        self.log_namespace.insert_source_metadata(
+                                            SimpleHttpConfig::NAME,
+                                            log,
+                                            Some(LegacyKey::InsertIfEmpty(path!(
+                                                header_name.as_str()
+                                            ))),
+                                            path!("headers", header_name.as_str()),
+                                            Value::from(value.map(Bytes::copy_from_slice)),
+                                        );
+                                    }
+                                }
+                            }
+                        };
                     }
 
                     self.log_namespace.insert_standard_vector_source_metadata(
@@ -477,18 +510,15 @@ impl HttpSource for SimpleHttpSource {
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
-    use std::{collections::BTreeMap, io::Write, net::SocketAddr};
+    use std::{io::Write, net::SocketAddr};
 
     use flate2::{
         write::{GzEncoder, ZlibEncoder},
         Compression,
     };
     use futures::Stream;
-    use http::{HeaderMap, Method, StatusCode};
+    use http::{HeaderMap, Method, StatusCode, Uri};
     use similar_asserts::assert_eq;
-    use vrl::value::kind::Collection;
-    use vrl::value::Kind;
-
     use vector_lib::codecs::{
         decoding::{DeserializerConfig, FramingConfig},
         BytesDecoderConfig, JsonDeserializerConfig,
@@ -498,9 +528,11 @@ mod tests {
     use vector_lib::lookup::lookup_v2::OptionalValuePath;
     use vector_lib::lookup::{event_path, owned_value_path, OwnedTargetPath, PathPrefix};
     use vector_lib::schema::Definition;
+    use vrl::value::{kind::Collection, Kind, ObjectMap};
 
     use crate::sources::http_server::HttpMethod;
     use crate::{
+        components::validation::prelude::*,
         config::{log_schema, SourceConfig, SourceContext},
         event::{Event, EventStatus, Value},
         test_util::{
@@ -559,6 +591,7 @@ mod tests {
                 decoding,
                 acknowledgements: acknowledgements.into(),
                 log_namespace: None,
+                keepalive: Default::default(),
             }
             .build(context)
             .await
@@ -890,8 +923,8 @@ mod tests {
         {
             let event = events.remove(0);
             let log = event.as_log();
-            let mut map = BTreeMap::new();
-            map.insert("dotted.key2".to_string(), Value::from("value2"));
+            let mut map = ObjectMap::new();
+            map.insert("dotted.key2".into(), Value::from("value2"));
             assert_eq!(log["nested"], map.into());
         }
     }
@@ -977,11 +1010,13 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert("User-Agent", "test_client".parse().unwrap());
             headers.insert("Upgrade-Insecure-Requests", "false".parse().unwrap());
+            headers.insert("X-Test-Header", "true".parse().unwrap());
 
             let (rx, addr) = source(
                 vec![
                     "User-Agent".to_string(),
                     "Upgrade-Insecure-Requests".to_string(),
+                    "X-*".to_string(),
                     "AbsentHeader".to_string(),
                 ],
                 vec![],
@@ -1012,7 +1047,49 @@ mod tests {
             assert_eq!(log["key1"], "value1".into());
             assert_eq!(log["\"User-Agent\""], "test_client".into());
             assert_eq!(log["\"Upgrade-Insecure-Requests\""], "false".into());
+            assert_eq!(log["\"x-test-header\""], "true".into());
             assert_eq!(log["AbsentHeader"], Value::Null);
+            assert_event_metadata(log).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn http_headers_wildcard() {
+        let mut events = assert_source_compliance(&HTTP_PUSH_SOURCE_TAGS, async {
+            let mut headers = HeaderMap::new();
+            headers.insert("User-Agent", "test_client".parse().unwrap());
+            headers.insert("X-Case-Sensitive-Value", "CaseSensitive".parse().unwrap());
+
+            let (rx, addr) = source(
+                vec!["*".to_string()],
+                vec![],
+                "http_path",
+                "/",
+                "POST",
+                StatusCode::OK,
+                true,
+                EventStatus::Delivered,
+                true,
+                None,
+                Some(JsonDeserializerConfig::default().into()),
+            )
+            .await;
+
+            spawn_ok_collect_n(
+                send_with_headers(addr, "{\"key1\":\"value1\"}", headers),
+                rx,
+                1,
+            )
+            .await
+        })
+        .await;
+
+        {
+            let event = events.remove(0);
+            let log = event.as_log();
+            assert_eq!(log["key1"], "value1".into());
+            assert_eq!(log["\"user-agent\""], "test_client".into());
+            assert_eq!(log["\"x-case-sensitive-value\""], "CaseSensitive".into());
             assert_event_metadata(log).await;
         }
     }
@@ -1444,4 +1521,35 @@ mod tests {
             );
         }
     }
+
+    impl ValidatableComponent for SimpleHttpConfig {
+        fn validation_configuration() -> ValidationConfiguration {
+            let config = Self {
+                decoding: Some(DeserializerConfig::Json(Default::default())),
+                ..Default::default()
+            };
+
+            let listen_addr_http = format!("http://{}/", config.address);
+            let uri = Uri::try_from(&listen_addr_http).expect("should not fail to parse URI");
+
+            let external_resource = ExternalResource::new(
+                ResourceDirection::Push,
+                HttpResourceConfig::from_parts(uri, Some(config.method.into())),
+                config
+                    .get_decoding_config()
+                    .expect("should not fail to get decoding config"),
+            );
+
+            ValidationConfiguration::from_source(
+                Self::NAME,
+                vec![ComponentTestCaseConfig::from_source(
+                    config,
+                    None,
+                    Some(external_resource),
+                )],
+            )
+        }
+    }
+
+    register_validatable_component!(SimpleHttpConfig);
 }

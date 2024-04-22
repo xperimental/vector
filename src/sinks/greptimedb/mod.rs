@@ -19,8 +19,6 @@
 //! - Distribution, Histogram and Summary, Sketch: Statistical attributes like
 //! `sum`, `count`, "max", "min", quantiles and buckets are stored as columns.
 //!
-use greptimedb_client::Client;
-use snafu::Snafu;
 use vector_lib::sensitive_string::SensitiveString;
 
 use crate::sinks::prelude::*;
@@ -102,7 +100,7 @@ pub struct GreptimeDBConfig {
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
+        skip_serializing_if = "crate::serde::is_default"
     )]
     pub acknowledgements: AcknowledgementsConfig,
 
@@ -116,7 +114,7 @@ impl_generate_config_from_default!(GreptimeDBConfig);
 #[async_trait::async_trait]
 impl SinkConfig for GreptimeDBConfig {
     async fn build(&self, _cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        let request_settings = self.request.unwrap_with(&TowerRequestConfig::default());
+        let request_settings = self.request.into_settings();
         let service = ServiceBuilder::new()
             .settings(request_settings, GreptimeDBRetryLogic)
             .service(service::GreptimeDBService::try_new(self)?);
@@ -139,17 +137,9 @@ impl SinkConfig for GreptimeDBConfig {
 }
 
 fn healthcheck(config: &GreptimeDBConfig) -> crate::Result<super::Healthcheck> {
-    let client = Client::with_urls(vec![&config.endpoint]);
+    let client = service::new_client_from_config(config)?;
 
     Ok(async move { client.health_check().await.map_err(|error| error.into()) }.boxed())
-}
-
-#[derive(Debug, Snafu)]
-pub enum GreptimeDBConfigError {
-    #[snafu(display("greptimedb TLS Config Error: missing key"))]
-    TlsMissingKey,
-    #[snafu(display("greptimedb TLS Config Error: missing cert"))]
-    TlsMissingCert,
 }
 
 #[cfg(test)]

@@ -35,17 +35,63 @@ base: components: sources: datadog_agent: configuration: {
 		description: "Configures how events are decoded from raw bytes."
 		required:    false
 		type: object: options: {
+			avro: {
+				description:   "Apache Avro-specific encoder options."
+				relevant_when: "codec = \"avro\""
+				required:      true
+				type: object: options: {
+					schema: {
+						description: """
+																The Avro schema definition.
+																Please note that the following [`apache_avro::types::Value`] variants are currently *not* supported:
+																* `Date`
+																* `Decimal`
+																* `Duration`
+																* `Fixed`
+																* `TimeMillis`
+																"""
+						required: true
+						type: string: examples: ["{ \"type\": \"record\", \"name\": \"log\", \"fields\": [{ \"name\": \"message\", \"type\": \"string\" }] }"]
+					}
+					strip_schema_id_prefix: {
+						description: """
+																For Avro datum encoded in Kafka messages, the bytes are prefixed with the schema ID.  Set this to true to strip the schema ID prefix.
+																According to [Confluent Kafka's document](https://docs.confluent.io/platform/current/schema-registry/fundamentals/serdes-develop/index.html#wire-format).
+																"""
+						required: true
+						type: bool: {}
+					}
+				}
+			}
 			codec: {
 				description: "The codec to use for decoding events."
 				required:    false
 				type: string: {
 					default: "bytes"
 					enum: {
+						avro: """
+															Decodes the raw bytes as as an [Apache Avro][apache_avro] message.
+
+															[apache_avro]: https://avro.apache.org/
+															"""
 						bytes: "Uses the raw bytes as-is."
 						gelf: """
 															Decodes the raw bytes as a [GELF][gelf] message.
 
+															This codec is experimental for the following reason:
+
+															The GELF specification is more strict than the actual Graylog receiver.
+															Vector's decoder currently adheres more strictly to the GELF spec, with
+															the exception that some characters such as `@`  are allowed in field names.
+
+															Other GELF codecs such as Loki's, use a [Go SDK][implementation] that is maintained
+															by Graylog, and is much more relaxed than the GELF spec.
+
+															Going forward, Vector will use that [Go SDK][implementation] as the reference implementation, which means
+															the codec may continue to relax the enforcement of specification.
+
 															[gelf]: https://docs.graylog.org/docs/gelf
+															[implementation]: https://github.com/Graylog2/go-gelf/blob/v2/gelf/reader.go
 															"""
 						json: """
 															Decodes the raw bytes as [JSON][json].
@@ -81,6 +127,11 @@ base: components: sources: datadog_agent: configuration: {
 
 															[rfc3164]: https://www.ietf.org/rfc/rfc3164.txt
 															[rfc5424]: https://www.ietf.org/rfc/rfc5424.txt
+															"""
+						vrl: """
+															Decodes the raw bytes as a string and passes them as input to a [VRL][vrl] program.
+
+															[vrl]: https://vector.dev/docs/reference/vrl
 															"""
 					}
 				}
@@ -166,6 +217,37 @@ base: components: sources: datadog_agent: configuration: {
 					type: bool: default: true
 				}
 			}
+			vrl: {
+				description:   "VRL-specific decoding options."
+				relevant_when: "codec = \"vrl\""
+				required:      true
+				type: object: options: {
+					source: {
+						description: """
+																The [Vector Remap Language][vrl] (VRL) program to execute for each event.
+																Note that the final contents of the `.` target will be used as the decoding result.
+																Compilation error or use of 'abort' in a program will result in a decoding error.
+
+																[vrl]: https://vector.dev/docs/reference/vrl
+																"""
+						required: true
+						type: string: {}
+					}
+					timezone: {
+						description: """
+																The name of the timezone to apply to timestamp conversions that do not contain an explicit
+																time zone. The time zone name may be any name in the [TZ database][tz_database], or `local`
+																to indicate system local time.
+
+																If not set, `local` will be used.
+
+																[tz_database]: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+																"""
+						required: false
+						type: string: examples: ["local", "America/New_York", "EST5EDT"]
+					}
+				}
+			}
 		}
 	}
 	disable_logs: {
@@ -174,12 +256,12 @@ base: components: sources: datadog_agent: configuration: {
 		type: bool: default: false
 	}
 	disable_metrics: {
-		description: "If this is set to `true`, metrics are not accepted by the component."
+		description: "If this is set to `true`, metrics (beta) are not accepted by the component."
 		required:    false
 		type: bool: default: false
 	}
 	disable_traces: {
-		description: "If this is set to `true`, traces are not accepted by the component."
+		description: "If this is set to `true`, traces (alpha) are not accepted by the component."
 		required:    false
 		type: bool: default: false
 	}
@@ -274,13 +356,58 @@ base: components: sources: datadog_agent: configuration: {
 			}
 		}
 	}
+	keepalive: {
+		description: "Configuration of HTTP server keepalive parameters."
+		required:    false
+		type: object: options: {
+			max_connection_age_jitter_factor: {
+				description: """
+					The factor by which to jitter the `max_connection_age_secs` value.
+
+					A value of 0.1 means that the actual duration will be between 90% and 110% of the
+					specified maximum duration.
+					"""
+				required: false
+				type: float: default: 0.1
+			}
+			max_connection_age_secs: {
+				description: """
+					The maximum amount of time a connection may exist before it is closed by sending
+					a `Connection: close` header on the HTTP response. Set this to a large value like
+					`100000000` to "disable" this feature
+
+					Only applies to HTTP/0.9, HTTP/1.0, and HTTP/1.1 requests.
+
+					A random jitter configured by `max_connection_age_jitter_factor` is added
+					to the specified duration to spread out connection storms.
+					"""
+				required: false
+				type: uint: {
+					default: 300
+					examples: [600]
+					unit: "seconds"
+				}
+			}
+		}
+	}
 	multiple_outputs: {
 		description: """
-			If this is set to `true` logs, metrics, and traces are sent to different outputs.
+			If this is set to `true`, logs, metrics (beta), and traces (alpha) are sent to different outputs.
 
-			For a source component named `agent`, the received logs, metrics, and traces can then be
+			For a source component named `agent`, the received logs, metrics (beta), and traces (alpha) can then be
 			configured as input to other components by specifying `agent.logs`, `agent.metrics`, and
 			`agent.traces`, respectively.
+			"""
+		required: false
+		type: bool: default: false
+	}
+	parse_ddtags: {
+		description: """
+			If this is set to `true`, when log events contain the field `ddtags`, the string value that
+			contains a list of key:value pairs set by the Agent is parsed and expanded into an object.
+
+			Note: This setting introduced in 0.37.0 is incorrectly parsing into an object. This will be
+			fixed in 0.37.1 to parse into an array, which aligns with the Datadog intake.
 			"""
 		required: false
 		type: bool: default: false
@@ -358,14 +485,14 @@ base: components: sources: datadog_agent: configuration: {
 			}
 			verify_certificate: {
 				description: """
-					Enables certificate verification.
+					Enables certificate verification. For components that create a server, this requires that the
+					client connections have a valid client certificate. For components that initiate requests,
+					this validates that the upstream has a valid certificate.
 
 					If enabled, certificates must not be expired and must be issued by a trusted
 					issuer. This verification operates in a hierarchical manner, checking that the leaf certificate (the
 					certificate presented by the client/server) is not only valid, but that the issuer of that certificate is also valid, and
 					so on until the verification process reaches a root certificate.
-
-					Relevant for both incoming and outgoing connections.
 
 					Do NOT set this to `false` unless you understand the risks of not verifying the validity of certificates.
 					"""

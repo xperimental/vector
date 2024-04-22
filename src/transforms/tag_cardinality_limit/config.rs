@@ -47,7 +47,7 @@ pub enum Mode {
     /// This mode has lower memory requirements than `exact`, but may occasionally allow metric
     /// events to pass through the transform even when they contain new tags that exceed the
     /// configured limit. The rate at which this happens can be controlled by changing the value of
-    /// `cache_size_per_tag`.
+    /// `cache_size_per_key`.
     Probabilistic(BloomFilterConfig),
 }
 
@@ -86,7 +86,7 @@ const fn default_value_limit() -> usize {
 }
 
 pub(crate) const fn default_cache_size() -> usize {
-    5000 * 1024 // 5KB
+    5 * 1024 // 5KB
 }
 
 impl GenerateConfig for TagCardinalityLimitConfig {

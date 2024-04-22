@@ -10,7 +10,7 @@ The format for each entry should be: `<version> <identifier> <description>`.
 
 For example:
 
-- legacy_openssl_provider v0.34.0 OpenSSL legacy provider flag should be removed
+- v0.34.0 legacy_openssl_provider OpenSSL legacy provider flag should be removed
 
 ## To be deprecated
 
@@ -18,4 +18,5 @@ For example:
 
 ## To be removed
 
-- http_internal_metrics v0.35.0 `requests_completed_total`, `request_duration_seconds`, and `requests_received_total` internal metrics should be removed.
+- v0.38.0 strict_env_vars Remove option for configuring missing environment variable interpolation
+  to be a warning rather than an error

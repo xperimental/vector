@@ -93,7 +93,7 @@ pub struct PubsubConfig {
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
+        skip_serializing_if = "crate::serde::is_default"
     )]
     acknowledgements: AcknowledgementsConfig,
 }
@@ -123,7 +123,7 @@ impl SinkConfig for PubsubConfig {
             .validate()?
             .limit_max_bytes(MAX_BATCH_PAYLOAD_SIZE)?
             .into_batch_settings()?;
-        let request_settings = self.request.unwrap_with(&Default::default());
+        let request_settings = self.request.into_settings();
         let tls_settings = TlsSettings::from_options(&self.tls)?;
         let client = HttpClient::new(tls_settings, cx.proxy())?;
 

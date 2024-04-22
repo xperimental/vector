@@ -41,6 +41,10 @@ releases: "0.34.0": {
 			`application/json` when the default `snappy` compression is used. This results in
 			Loki rejecting the requests with an HTTP 400 response. This is fixed in v0.34.1.
 			""",
+		"""
+			The `protobuf` encoder does not work in sinks
+			[#19230](https://github.com/vectordotdev/vector/issues/19230). Fixed in `v0.34.2`.
+			""",
 	]
 
 	changelog: [
@@ -248,7 +252,7 @@ releases: "0.34.0": {
 
 				- `grpc_server_messages_received_total`
 				- `grpc_server_messages_sent_total`
-				- `grpc_server_handler_duration_seconds
+				- `grpc_server_handler_duration_seconds`
 				"""
 			pr_numbers: [18887]
 		},

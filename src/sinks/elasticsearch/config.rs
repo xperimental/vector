@@ -23,7 +23,7 @@ use crate::{
         },
         util::{
             http::RequestConfig, service::HealthConfig, BatchConfig, Compression,
-            RealtimeSizeBasedDefaultBatchSettings, TowerRequestConfig,
+            RealtimeSizeBasedDefaultBatchSettings,
         },
         Healthcheck, VectorSink,
     },
@@ -124,10 +124,7 @@ pub struct ElasticsearchConfig {
     #[configurable(derived)]
     pub compression: Compression,
 
-    #[serde(
-        skip_serializing_if = "crate::serde::skip_serializing_if_default",
-        default
-    )]
+    #[serde(skip_serializing_if = "crate::serde::is_default", default)]
     #[configurable(derived)]
     #[configurable(metadata(docs::advanced))]
     pub encoding: Transformer,
@@ -183,7 +180,7 @@ pub struct ElasticsearchConfig {
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
+        skip_serializing_if = "crate::serde::is_default"
     )]
     #[configurable(derived)]
     pub acknowledgements: AcknowledgementsConfig,
@@ -482,10 +479,7 @@ impl SinkConfig for ElasticsearchConfig {
 
         let client = HttpClient::new(common.tls_settings.clone(), cx.proxy())?;
 
-        let request_limits = self
-            .request
-            .tower
-            .unwrap_with(&TowerRequestConfig::default());
+        let request_limits = self.request.tower.into_settings();
 
         let health_config = self.endpoint_health.clone().unwrap_or_default();
 
@@ -509,6 +503,7 @@ impl SinkConfig for ElasticsearchConfig {
             services,
             health_config,
             ElasticsearchHealthLogic,
+            1,
         );
 
         let sink = ElasticsearchSink::new(&common, self, service)?;

@@ -52,17 +52,14 @@ pub struct HoneycombConfig {
     request: TowerRequestConfig,
 
     #[configurable(derived)]
-    #[serde(
-        default,
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
-    )]
+    #[serde(default, skip_serializing_if = "crate::serde::is_default")]
     encoding: Transformer,
 
     #[configurable(derived)]
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
+        skip_serializing_if = "crate::serde::is_default"
     )]
     acknowledgements: AcknowledgementsConfig,
 }
@@ -113,7 +110,7 @@ impl SinkConfig for HoneycombConfig {
 
         let service = HttpService::new(client.clone(), honeycomb_service_request_builder);
 
-        let request_limits = self.request.unwrap_with(&TowerRequestConfig::default());
+        let request_limits = self.request.into_settings();
 
         let service = ServiceBuilder::new()
             .settings(request_limits, http_response_retry_logic())

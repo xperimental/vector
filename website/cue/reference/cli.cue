@@ -15,7 +15,7 @@ cli: {
 		required:    bool | *false
 		name:        Arg
 		type:        #ArgType
-		default?:    string | [...string]
+		default?: string | [...string]
 	}
 
 	#ArgType: "string" | "list"
@@ -120,6 +120,10 @@ cli: {
 		"allow-empty-config": {
 			description: env_vars.VECTOR_ALLOW_EMPTY_CONFIG.description
 			env_var:     "VECTOR_ALLOW_EMPTY_CONFIG"
+		}
+		"strict-env-vars": {
+			description: env_vars.VECTOR_STRICT_ENV_VARS.description
+			env_var:     "VECTOR_STRICT_ENV_VARS"
 		}
 	}
 
@@ -409,6 +413,12 @@ cli: {
 						checks and health checks
 						"""
 				}
+				"skip-healthchecks": {
+					_short: "ne"
+					description: """
+						Disables health checks during validation.
+						"""
+				}
 				"deny-warnings": {
 					_short:      "d"
 					description: "Fail validation on warnings"
@@ -645,6 +655,16 @@ cli: {
 				Allow the configuration to run without any components. This is useful for loading in an empty stub config that will later be replaced with actual components. Note that this is likely not useful without also watching for config file changes as described in `--watch-config`.
 				"""
 			type: bool: default: false
+		}
+		VECTOR_STRICT_ENV_VARS: {
+			description: """
+				Turn on strict mode for environment variable interpolation. When set, interpolation of a missing
+				environment variable in configuration files will cause an error instead of a warning, which will
+				result in a failure to load any such configuration file. This option is deprecated and will be
+				removed in a future version to remove the ability to downgrade missing environment variables to
+				warnings.
+				"""
+			type: bool: default: true
 		}
 	}
 

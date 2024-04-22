@@ -389,9 +389,9 @@ impl LokiSink {
         // requires in-order processing for version >= 2.4, instead we just keep the static limit
         // of 1 for now.
         let request_limits = match config.out_of_order_action {
-            OutOfOrderAction::Accept => config.request.unwrap_with(&Default::default()),
+            OutOfOrderAction::Accept => config.request.into_settings(),
             OutOfOrderAction::Drop | OutOfOrderAction::RewriteTimestamp => {
-                let mut settings = config.request.unwrap_with(&Default::default());
+                let mut settings = config.request.into_settings();
                 settings.concurrency = Some(1);
                 settings
             }
@@ -509,14 +509,11 @@ fn slugify_text(input: String) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{BTreeMap, HashMap},
-        convert::TryFrom,
-    };
+    use std::{collections::HashMap, convert::TryFrom};
 
     use futures::stream::StreamExt;
     use vector_lib::codecs::JsonSerializerConfig;
-    use vector_lib::event::{Event, LogEvent, Value};
+    use vector_lib::event::{Event, LogEvent, ObjectMap, Value};
     use vector_lib::lookup::PathPrefix;
 
     use super::{EventEncoder, KeyPartitioner, RecordFilter};
@@ -587,9 +584,9 @@ mod tests {
         log.insert("name", "foo");
         log.insert("value", "bar");
 
-        let mut test_dict = BTreeMap::default();
-        test_dict.insert("one".to_string(), Value::from("foo"));
-        test_dict.insert("two".to_string(), Value::from("baz"));
+        let mut test_dict = ObjectMap::default();
+        test_dict.insert("one".into(), Value::from("foo"));
+        test_dict.insert("two".into(), Value::from("baz"));
         log.insert("dict", Value::from(test_dict));
 
         let record = encoder.encode_event(event).unwrap();
@@ -644,7 +641,7 @@ mod tests {
         	}
         }
         "#;
-        let msg: BTreeMap<String, Value> = serde_json::from_str(message)?;
+        let msg: ObjectMap = serde_json::from_str(message)?;
         let event = Event::Log(LogEvent::from(msg));
         let record = encoder.encode_event(event).unwrap();
 
@@ -689,7 +686,7 @@ mod tests {
         	}
         }
         "#;
-        let msg: BTreeMap<String, Value> = serde_json::from_str(message)?;
+        let msg: ObjectMap = serde_json::from_str(message)?;
         let event = Event::Log(LogEvent::from(msg));
         let record = encoder.encode_event(event).unwrap();
 
@@ -717,7 +714,7 @@ mod tests {
             remove_timestamp: false,
         };
 
-        let msg: BTreeMap<String, Value> = serde_json::from_str("{}")?;
+        let msg: ObjectMap = serde_json::from_str("{}")?;
         let event = Event::Log(LogEvent::from(msg));
         let record = encoder.encode_event(event).unwrap();
 

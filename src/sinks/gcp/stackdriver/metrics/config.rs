@@ -1,21 +1,34 @@
 use bytes::Bytes;
 use goauth::scopes::Scope;
-use http::{Request, Uri};
+use http::{header::CONTENT_TYPE, Request, Uri};
 
+use super::{
+    request_builder::{StackdriverMetricsEncoder, StackdriverMetricsRequestBuilder},
+    sink::StackdriverMetricsSink,
+};
 use crate::{
     gcp::{GcpAuthConfig, GcpAuthenticator},
     http::HttpClient,
     sinks::{
         gcp,
         prelude::*,
-        util::http::{http_response_retry_logic, HttpService, HttpServiceRequestBuilder},
+        util::{
+            http::{
+                http_response_retry_logic, HttpRequest, HttpService, HttpServiceRequestBuilder,
+            },
+            service::TowerRequestConfigDefaults,
+        },
+        HTTPRequestBuilderSnafu,
     },
 };
+use snafu::ResultExt;
 
-use super::{
-    request_builder::{StackdriverMetricsEncoder, StackdriverMetricsRequestBuilder},
-    sink::StackdriverMetricsSink,
-};
+#[derive(Clone, Copy, Debug)]
+pub struct StackdriverMetricsTowerRequestConfigDefaults;
+
+impl TowerRequestConfigDefaults for StackdriverMetricsTowerRequestConfigDefaults {
+    const RATE_LIMIT_NUM: u64 = 1_000;
+}
 
 /// Configuration for the `gcp_stackdriver_metrics` sink.
 #[configurable_component(sink(
@@ -49,7 +62,7 @@ pub struct StackdriverConfig {
 
     #[configurable(derived)]
     #[serde(default)]
-    pub(super) request: TowerRequestConfig,
+    pub(super) request: TowerRequestConfig<StackdriverMetricsTowerRequestConfigDefaults>,
 
     #[configurable(derived)]
     #[serde(default)]
@@ -62,7 +75,7 @@ pub struct StackdriverConfig {
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
+        skip_serializing_if = "crate::serde::is_default"
     )]
     pub(super) acknowledgements: AcknowledgementsConfig,
 }
@@ -98,11 +111,7 @@ impl SinkConfig for StackdriverConfig {
             },
         };
 
-        let request_limits = self.request.unwrap_with(
-            &TowerRequestConfig::default()
-                .rate_limit_duration_secs(1)
-                .rate_limit_num(1000),
-        );
+        let request_limits = self.request.into_settings();
 
         let uri: Uri = format!(
             "{}/v3/projects/{}/timeSeries",
@@ -150,16 +159,18 @@ pub(super) struct StackdriverMetricsServiceRequestBuilder {
     pub(super) auth: GcpAuthenticator,
 }
 
-impl HttpServiceRequestBuilder for StackdriverMetricsServiceRequestBuilder {
-    fn build(&self, body: Bytes) -> Request<Bytes> {
-        let mut request = Request::post(self.uri.clone())
-            .header("Content-Type", "application/json")
-            .body(body)
-            .unwrap();
+impl HttpServiceRequestBuilder<()> for StackdriverMetricsServiceRequestBuilder {
+    fn build(&self, mut request: HttpRequest<()>) -> Result<Request<Bytes>, crate::Error> {
+        let builder = Request::post(self.uri.clone()).header(CONTENT_TYPE, "application/json");
+
+        let mut request = builder
+            .body(request.take_payload())
+            .context(HTTPRequestBuilderSnafu)
+            .map_err(Into::<crate::Error>::into)?;
 
         self.auth.apply(&mut request);
 
-        request
+        Ok(request)
     }
 }
 

@@ -70,7 +70,20 @@ base: components: sinks: socket: configuration: {
 					gelf: """
 						Encodes an event as a [GELF][gelf] message.
 
+						This codec is experimental for the following reason:
+
+						The GELF specification is more strict than the actual Graylog receiver.
+						Vector's encoder currently adheres more strictly to the GELF spec, with
+						the exception that some characters such as `@`  are allowed in field names.
+
+						Other GELF codecs such as Loki's, use a [Go SDK][implementation] that is maintained
+						by Graylog, and is much more relaxed than the GELF spec.
+
+						Going forward, Vector will use that [Go SDK][implementation] as the reference implementation, which means
+						the codec may continue to relax the enforcement of specification.
+
 						[gelf]: https://docs.graylog.org/docs/gelf
+						[implementation]: https://github.com/Graylog2/go-gelf/blob/v2/gelf/reader.go
 						"""
 					json: """
 						Encodes an event as [JSON][json].
@@ -413,14 +426,14 @@ base: components: sinks: socket: configuration: {
 			}
 			verify_certificate: {
 				description: """
-					Enables certificate verification.
+					Enables certificate verification. For components that create a server, this requires that the
+					client connections have a valid client certificate. For components that initiate requests,
+					this validates that the upstream has a valid certificate.
 
 					If enabled, certificates must not be expired and must be issued by a trusted
 					issuer. This verification operates in a hierarchical manner, checking that the leaf certificate (the
 					certificate presented by the client/server) is not only valid, but that the issuer of that certificate is also valid, and
 					so on until the verification process reaches a root certificate.
-
-					Relevant for both incoming and outgoing connections.
 
 					Do NOT set this to `false` unless you understand the risks of not verifying the validity of certificates.
 					"""

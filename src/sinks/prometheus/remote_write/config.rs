@@ -108,7 +108,7 @@ pub struct RemoteWriteConfig {
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
+        skip_serializing_if = "crate::serde::is_default"
     )]
     pub acknowledgements: AcknowledgementsConfig,
 
@@ -135,7 +135,7 @@ impl SinkConfig for RemoteWriteConfig {
     async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
         let endpoint = self.endpoint.parse::<Uri>().context(UriParseSnafu)?;
         let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let request_settings = self.request.unwrap_with(&TowerRequestConfig::default());
+        let request_settings = self.request.into_settings();
         let buckets = self.buckets.clone();
         let quantiles = self.quantiles.clone();
         let default_namespace = self.default_namespace.clone();
@@ -163,7 +163,9 @@ impl SinkConfig for RemoteWriteConfig {
                     .ok_or(Errors::AwsRegionRequired)?
                     .ok_or(Errors::AwsRegionRequired)?;
                 Some(Auth::Aws {
-                    credentials_provider: aws_auth.credentials_provider(region.clone()).await?,
+                    credentials_provider: aws_auth
+                        .credentials_provider(region.clone(), cx.proxy(), &self.tls)
+                        .await?,
                     region,
                 })
             }

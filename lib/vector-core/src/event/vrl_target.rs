@@ -7,7 +7,7 @@ use snafu::Snafu;
 use vrl::compiler::value::VrlValueConvert;
 use vrl::compiler::{ProgramInfo, SecretTarget, Target};
 use vrl::prelude::Collection;
-use vrl::value::{Kind, Value};
+use vrl::value::{Kind, ObjectMap, Value};
 
 use super::{metric::TagValue, Event, EventMetadata, LogEvent, Metric, MetricKind, TraceEvent};
 use crate::config::{log_schema, LogNamespace};
@@ -282,8 +282,9 @@ impl Target for VrlTarget {
                         return Err(MetricPathError::SetPathError.to_string());
                     }
 
-                    if let Some(paths) =
-                        path.to_alternative_components(MAX_METRIC_PATH_DEPTH).get(0)
+                    if let Some(paths) = path
+                        .to_alternative_components(MAX_METRIC_PATH_DEPTH)
+                        .first()
                     {
                         match paths.as_slice() {
                             ["tags"] => {
@@ -293,7 +294,7 @@ impl Target for VrlTarget {
                                 metric.remove_tags();
                                 for (field, value) in &value {
                                     set_metric_tag_values(
-                                        field.as_str().to_owned(),
+                                        field[..].into(),
                                         value,
                                         metric,
                                         *multi_value_tags,
@@ -406,7 +407,7 @@ impl Target for VrlTarget {
                     if let Some(paths) = target_path
                         .path
                         .to_alternative_components(MAX_METRIC_PATH_DEPTH)
-                        .get(0)
+                        .first()
                     {
                         let removed_value = match paths.as_slice() {
                             ["namespace"] => metric.series.name.namespace.take().map(Into::into),
@@ -538,7 +539,7 @@ fn target_get_mut_metric<'a>(
 /// This structure is partially populated based on the fields accessed by
 /// the VRL program as informed by `ProgramInfo`.
 fn precompute_metric_value(metric: &Metric, info: &ProgramInfo) -> Value {
-    let mut map = BTreeMap::default();
+    let mut map = ObjectMap::default();
 
     let mut set_name = false;
     let mut set_kind = false;
@@ -551,36 +552,36 @@ fn precompute_metric_value(metric: &Metric, info: &ProgramInfo) -> Value {
         // Accessing a root path requires us to pre-populate all fields.
         if target_path == &OwnedTargetPath::event_root() {
             if !set_name {
-                map.insert("name".to_owned(), metric.name().to_owned().into());
+                map.insert("name".into(), metric.name().to_owned().into());
             }
 
             if !set_kind {
-                map.insert("kind".to_owned(), metric.kind().into());
+                map.insert("kind".into(), metric.kind().into());
             }
 
             if !set_type {
-                map.insert("type".to_owned(), metric.value().clone().into());
+                map.insert("type".into(), metric.value().clone().into());
             }
 
             if !set_namespace {
                 if let Some(namespace) = metric.namespace() {
-                    map.insert("namespace".to_owned(), namespace.to_owned().into());
+                    map.insert("namespace".into(), namespace.to_owned().into());
                 }
             }
 
             if !set_timestamp {
                 if let Some(timestamp) = metric.timestamp() {
-                    map.insert("timestamp".to_owned(), timestamp.into());
+                    map.insert("timestamp".into(), timestamp.into());
                 }
             }
 
             if !set_tags {
                 if let Some(tags) = metric.tags().cloned() {
                     map.insert(
-                        "tags".to_owned(),
+                        "tags".into(),
                         tags.into_iter_single()
-                            .map(|(tag, value)| (tag, value.into()))
-                            .collect::<BTreeMap<_, _>>()
+                            .map(|(tag, value)| (tag.into(), value.into()))
+                            .collect::<ObjectMap>()
                             .into(),
                     );
                 }
@@ -595,38 +596,38 @@ fn precompute_metric_value(metric: &Metric, info: &ProgramInfo) -> Value {
             match field.as_ref() {
                 "name" if !set_name => {
                     set_name = true;
-                    map.insert("name".to_owned(), metric.name().to_owned().into());
+                    map.insert("name".into(), metric.name().to_owned().into());
                 }
                 "kind" if !set_kind => {
                     set_kind = true;
-                    map.insert("kind".to_owned(), metric.kind().into());
+                    map.insert("kind".into(), metric.kind().into());
                 }
                 "type" if !set_type => {
                     set_type = true;
-                    map.insert("type".to_owned(), metric.value().clone().into());
+                    map.insert("type".into(), metric.value().clone().into());
                 }
                 "namespace" if !set_namespace && metric.namespace().is_some() => {
                     set_namespace = true;
                     map.insert(
-                        "namespace".to_owned(),
+                        "namespace".into(),
                         metric.namespace().unwrap().to_owned().into(),
                     );
                 }
                 "timestamp" if !set_timestamp && metric.timestamp().is_some() => {
                     set_timestamp = true;
-                    map.insert("timestamp".to_owned(), metric.timestamp().unwrap().into());
+                    map.insert("timestamp".into(), metric.timestamp().unwrap().into());
                 }
                 "tags" if !set_tags && metric.tags().is_some() => {
                     set_tags = true;
                     map.insert(
-                        "tags".to_owned(),
+                        "tags".into(),
                         metric
                             .tags()
                             .cloned()
                             .unwrap()
                             .into_iter_single()
-                            .map(|(tag, value)| (tag, value.into()))
-                            .collect::<BTreeMap<_, _>>()
+                            .map(|(tag, value)| (tag.into(), value.into()))
+                            .collect::<ObjectMap>()
                             .into(),
                     );
                 }
@@ -784,13 +785,13 @@ mod test {
             ),
             (
                 btreemap! { "foo" => btreemap! { "bar baz" => btreemap! { "baz" => 2 } } },
-                owned_value_path!("foo", vec!["qux", r#"bar baz"#], "baz"),
+                owned_value_path!("foo", vec!["qux", r"bar baz"], "baz"),
                 Ok(Some(2.into())),
             ),
         ];
 
         for (value, path, expect) in cases {
-            let value: BTreeMap<String, Value> = value;
+            let value: ObjectMap = value;
             let info = ProgramInfo {
                 fallible: false,
                 abortable: false,
@@ -894,7 +895,7 @@ mod test {
         ];
 
         for (object, path, value, expect, result) in cases {
-            let object: BTreeMap<String, Value> = object;
+            let object: ObjectMap = object;
             let info = ProgramInfo {
                 fallible: false,
                 abortable: false,
@@ -939,7 +940,7 @@ mod test {
             ),
             (
                 BTreeMap::from([("foo".into(), "bar".into())]),
-                owned_value_path!(vec![r#"foo bar"#, "foo"]),
+                owned_value_path!(vec![r"foo bar", "foo"]),
                 false,
                 Some(BTreeMap::new().into()),
             ),
@@ -972,7 +973,7 @@ mod test {
                     "foo" => btreemap! { "bar baz" => vec![0] },
                     "bar" => "baz",
                 },
-                owned_value_path!("foo", r#"bar baz"#, 0),
+                owned_value_path!("foo", r"bar baz", 0),
                 false,
                 Some(
                     btreemap! {
@@ -987,7 +988,7 @@ mod test {
                     "foo" => btreemap! { "bar baz" => vec![0] },
                     "bar" => "baz",
                 },
-                owned_value_path!("foo", r#"bar baz"#, 0),
+                owned_value_path!("foo", r"bar baz", 0),
                 true,
                 Some(btreemap! { "bar" => "baz" }.into()),
             ),

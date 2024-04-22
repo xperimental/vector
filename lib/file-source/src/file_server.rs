@@ -295,7 +295,6 @@ where
 
             for (_, watcher) in &mut fp_map {
                 if !watcher.file_findable() && watcher.last_seen().elapsed() > self.rotate_wait {
-                    self.emitter.emit_gave_up_on_deleted_file(&watcher.path);
                     watcher.set_dead();
                 }
             }
@@ -304,7 +303,8 @@ where
             // If the FileWatcher is dead we don't retain it; it will be deallocated.
             fp_map.retain(|file_id, watcher| {
                 if watcher.dead() {
-                    self.emitter.emit_file_unwatched(&watcher.path);
+                    self.emitter
+                        .emit_file_unwatched(&watcher.path, watcher.reached_eof());
                     checkpoints.set_dead(*file_id);
                     false
                 } else {
