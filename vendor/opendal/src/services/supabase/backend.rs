@@ -157,12 +157,12 @@ pub struct SupabaseBackend {
 #[async_trait]
 impl Accessor for SupabaseBackend {
     type Reader = IncomingAsyncBody;
-    type BlockingReader = ();
     type Writer = oio::OneShotWriter<SupabaseWriter>;
+    // todo: implement Lister to support list and scan
+    type Lister = ();
+    type BlockingReader = ();
     type BlockingWriter = ();
-    // todo: implement Pager to support list and scan
-    type Pager = ();
-    type BlockingPager = ();
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -175,7 +175,6 @@ impl Accessor for SupabaseBackend {
                 read: true,
 
                 write: true,
-                create_dir: true,
                 delete: true,
 
                 ..Default::default()
@@ -184,58 +183,7 @@ impl Accessor for SupabaseBackend {
         am
     }
 
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
-        let mut req =
-            self.core
-                .supabase_upload_object_request(path, Some(0), None, AsyncBody::Empty)?;
-
-        self.core.sign(&mut req)?;
-
-        let resp = self.core.send(req).await?;
-
-        let status = resp.status();
-
-        if status.is_success() {
-            resp.into_body().consume().await?;
-            Ok(RpCreateDir::default())
-        } else {
-            // create duplicate dir is ok
-            let e = parse_error(resp).await?;
-            if e.kind() == ErrorKind::AlreadyExists {
-                Ok(RpCreateDir::default())
-            } else {
-                Err(e)
-            }
-        }
-    }
-
-    async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
-        let resp = self.core.supabase_get_object(path, args.range()).await?;
-
-        let status = resp.status();
-
-        match status {
-            StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
-                let meta = parse_into_metadata(path, resp.headers())?;
-                Ok((RpRead::with_metadata(meta), resp.into_body()))
-            }
-            _ => Err(parse_error(resp).await?),
-        }
-    }
-
-    async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        Ok((
-            RpWrite::default(),
-            oio::OneShotWriter::new(SupabaseWriter::new(self.core.clone(), path, args)),
-        ))
-    }
-
     async fn stat(&self, path: &str, _args: OpStat) -> Result<RpStat> {
-        // Stat root always returns a DIR.
-        if path == "/" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
         // The get_object_info does not contain the file size. Therefore
         // we first try the get the metadata through head, if we fail,
         // we then use get_object_info to get the actual error info
@@ -253,6 +201,24 @@ impl Accessor for SupabaseBackend {
                 }
             }
         }
+    }
+
+    async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
+        let resp = self.core.supabase_get_object(path, args.range()).await?;
+
+        let status = resp.status();
+
+        match status {
+            StatusCode::OK | StatusCode::PARTIAL_CONTENT => Ok((RpRead::new(), resp.into_body())),
+            _ => Err(parse_error(resp).await?),
+        }
+    }
+
+    async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
+        Ok((
+            RpWrite::default(),
+            oio::OneShotWriter::new(SupabaseWriter::new(self.core.clone(), path, args)),
+        ))
     }
 
     async fn delete(&self, path: &str, _: OpDelete) -> Result<RpDelete> {

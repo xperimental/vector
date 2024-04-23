@@ -31,9 +31,8 @@
 //! // Converted to Line(vec![
 //! //   Span { content: Cow::Borrowed("My title"), style: Style { fg: Some(Color::Yellow), .. }
 //! // ])
-//! let block = Block::default().title(
-//!     Span::styled("My title", Style::default().fg(Color::Yellow))
-//! );
+//! let block =
+//!     Block::default().title(Span::styled("My title", Style::default().fg(Color::Yellow)));
 //!
 //! // A string with multiple styles.
 //! // Converted to Line(vec![
@@ -45,8 +44,6 @@
 //!     Span::raw(" title"),
 //! ]);
 //! ```
-
-use crate::style::Style;
 
 mod grapheme;
 pub use grapheme::StyledGrapheme;

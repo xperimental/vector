@@ -1,4 +1,19 @@
-use std::{error::Error, io, rc::Rc};
+//! # [Ratatui] Calendar example
+//!
+//! The latest version of this example is available in the [examples] folder in the repository.
+//!
+//! Please note that the examples are designed to be run against the `main` branch of the Github
+//! repository. This means that you may not be able to compile with the latest release version on
+//! crates.io, or the one that you have installed locally.
+//!
+//! See the [examples readme] for more information on finding examples that match the version of the
+//! library you are using.
+//!
+//! [Ratatui]: https://github.com/ratatui-org/ratatui
+//! [examples]: https://github.com/ratatui-org/ratatui/blob/main/examples
+//! [examples readme]: https://github.com/ratatui-org/ratatui/blob/main/examples/README.md
+
+use std::{error::Error, io};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -55,41 +70,17 @@ fn draw(f: &mut Frame) {
 
     let list = make_dates(start.year());
 
-    for chunk in split_rows(&calarea)
-        .iter()
-        .flat_map(|row| split_cols(row).to_vec())
-    {
+    let rows = Layout::vertical([Constraint::Ratio(1, 3); 3]).split(calarea);
+    let cols = rows.iter().flat_map(|row| {
+        Layout::horizontal([Constraint::Ratio(1, 4); 4])
+            .split(*row)
+            .to_vec()
+    });
+    for col in cols {
         let cal = cals::get_cal(start.month(), start.year(), &list);
-        f.render_widget(cal, chunk);
+        f.render_widget(cal, col);
         start = start.replace_month(start.month().next()).unwrap();
     }
-}
-
-fn split_rows(area: &Rect) -> Rc<[Rect]> {
-    let list_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(0)
-        .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-        ]);
-
-    list_layout.split(*area)
-}
-
-fn split_cols(area: &Rect) -> Rc<[Rect]> {
-    let list_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .margin(0)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ]);
-
-    list_layout.split(*area)
 }
 
 fn make_dates(current_year: i32) -> CalendarEventStore {
@@ -175,7 +166,7 @@ fn make_dates(current_year: i32) -> CalendarEventStore {
 mod cals {
     use super::*;
 
-    pub(super) fn get_cal<'a, S: DateStyler>(m: Month, y: i32, es: S) -> Monthly<'a, S> {
+    pub(super) fn get_cal<'a, DS: DateStyler>(m: Month, y: i32, es: DS) -> Monthly<'a, DS> {
         use Month::*;
         match m {
             May => example1(m, y, es),
@@ -188,7 +179,7 @@ mod cals {
         }
     }
 
-    fn default<'a, S: DateStyler>(m: Month, y: i32, es: S) -> Monthly<'a, S> {
+    fn default<'a, DS: DateStyler>(m: Month, y: i32, es: DS) -> Monthly<'a, DS> {
         let default_style = Style::default()
             .add_modifier(Modifier::BOLD)
             .bg(Color::Rgb(50, 50, 50));
@@ -198,7 +189,7 @@ mod cals {
             .default_style(default_style)
     }
 
-    fn example1<'a, S: DateStyler>(m: Month, y: i32, es: S) -> Monthly<'a, S> {
+    fn example1<'a, DS: DateStyler>(m: Month, y: i32, es: DS) -> Monthly<'a, DS> {
         let default_style = Style::default()
             .add_modifier(Modifier::BOLD)
             .bg(Color::Rgb(50, 50, 50));
@@ -209,7 +200,7 @@ mod cals {
             .show_month_header(Style::default())
     }
 
-    fn example2<'a, S: DateStyler>(m: Month, y: i32, es: S) -> Monthly<'a, S> {
+    fn example2<'a, DS: DateStyler>(m: Month, y: i32, es: DS) -> Monthly<'a, DS> {
         let header_style = Style::default()
             .add_modifier(Modifier::BOLD)
             .add_modifier(Modifier::DIM)
@@ -225,7 +216,7 @@ mod cals {
             .show_month_header(Style::default())
     }
 
-    fn example3<'a, S: DateStyler>(m: Month, y: i32, es: S) -> Monthly<'a, S> {
+    fn example3<'a, DS: DateStyler>(m: Month, y: i32, es: DS) -> Monthly<'a, DS> {
         let header_style = Style::default()
             .add_modifier(Modifier::BOLD)
             .fg(Color::Green);
@@ -241,7 +232,7 @@ mod cals {
             .show_month_header(Style::default())
     }
 
-    fn example4<'a, S: DateStyler>(m: Month, y: i32, es: S) -> Monthly<'a, S> {
+    fn example4<'a, DS: DateStyler>(m: Month, y: i32, es: DS) -> Monthly<'a, DS> {
         let header_style = Style::default()
             .add_modifier(Modifier::BOLD)
             .fg(Color::Green);
@@ -255,7 +246,7 @@ mod cals {
             .default_style(default_style)
     }
 
-    fn example5<'a, S: DateStyler>(m: Month, y: i32, es: S) -> Monthly<'a, S> {
+    fn example5<'a, DS: DateStyler>(m: Month, y: i32, es: DS) -> Monthly<'a, DS> {
         let header_style = Style::default()
             .add_modifier(Modifier::BOLD)
             .fg(Color::Green);

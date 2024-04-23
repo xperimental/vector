@@ -35,7 +35,7 @@ use bytes::Bytes;
 use futures::FutureExt;
 use log::warn;
 
-use crate::raw::oio::PageOperation;
+use crate::raw::oio::ListOperation;
 use crate::raw::oio::ReadOperation;
 use crate::raw::oio::WriteOperation;
 use crate::raw::*;
@@ -49,7 +49,7 @@ use crate::*;
 /// returns true. If operation still failed, this layer will set error to
 /// `Persistent` which means error has been retried.
 ///
-/// `write` and `blocking_write` don't support retry so far, visit [this issue](https://github.com/apache/incubator-opendal/issues/1223) for more details.
+/// `write` and `blocking_write` don't support retry so far, visit [this issue](https://github.com/apache/opendal/issues/1223) for more details.
 ///
 /// # Examples
 ///
@@ -277,15 +277,16 @@ impl<A: Accessor, I: RetryInterceptor> Debug for RetryAccessor<A, I> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor, I: RetryInterceptor> LayeredAccessor for RetryAccessor<A, I> {
     type Inner = A;
     type Reader = RetryWrapper<A::Reader, I>;
     type BlockingReader = RetryWrapper<A::BlockingReader, I>;
     type Writer = RetryWrapper<A::Writer, I>;
     type BlockingWriter = RetryWrapper<A::BlockingWriter, I>;
-    type Pager = RetryWrapper<A::Pager, I>;
-    type BlockingPager = RetryWrapper<A::BlockingPager, I>;
+    type Lister = RetryWrapper<A::Lister, I>;
+    type BlockingLister = RetryWrapper<A::BlockingLister, I>;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -432,7 +433,7 @@ impl<A: Accessor, I: RetryInterceptor> LayeredAccessor for RetryAccessor<A, I> {
             .await
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         { || self.inner.list(path, args.clone()) }
             .retry(&self.builder)
             .when(|e| e.is_temporary())
@@ -445,9 +446,9 @@ impl<A: Accessor, I: RetryInterceptor> LayeredAccessor for RetryAccessor<A, I> {
             })
             .map(|v| {
                 v.map(|(l, p)| {
-                    let pager =
+                    let lister =
                         RetryWrapper::new(p, self.notify.clone(), path, self.builder.clone());
-                    (l, pager)
+                    (l, lister)
                 })
                 .map_err(|e| e.set_persistent())
             })
@@ -622,7 +623,7 @@ impl<A: Accessor, I: RetryInterceptor> LayeredAccessor for RetryAccessor<A, I> {
             .map_err(|e| e.set_persistent())
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         { || self.inner.blocking_list(path, args.clone()) }
             .retry(&self.builder)
             .when(|e| e.is_temporary())
@@ -870,7 +871,6 @@ impl<R: oio::BlockingRead, I: RetryInterceptor> oio::BlockingRead for RetryWrapp
     }
 }
 
-#[async_trait]
 impl<R: oio::Write, I: RetryInterceptor> oio::Write for RetryWrapper<R, I> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         if let Some(sleep) = self.sleep.as_mut() {
@@ -1049,37 +1049,58 @@ impl<R: oio::BlockingWrite, I: RetryInterceptor> oio::BlockingWrite for RetryWra
     }
 }
 
-#[async_trait]
-impl<P: oio::Page, I: RetryInterceptor> oio::Page for RetryWrapper<P, I> {
-    async fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
-        let mut backoff = self.builder.build();
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<P: oio::List, I: RetryInterceptor> oio::List for RetryWrapper<P, I> {
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<oio::Entry>>> {
+        if let Some(sleep) = self.sleep.as_mut() {
+            ready!(sleep.poll_unpin(cx));
+            self.sleep = None;
+        }
 
-        loop {
-            match self.inner.next().await {
-                Ok(v) => return Ok(v),
-                Err(e) if !e.is_temporary() => return Err(e),
-                Err(e) => match backoff.next() {
-                    None => return Err(e),
+        match ready!(self.inner.poll_next(cx)) {
+            Ok(v) => {
+                self.current_backoff = None;
+                Poll::Ready(Ok(v))
+            }
+            Err(err) if !err.is_temporary() => {
+                self.current_backoff = None;
+                Poll::Ready(Err(err))
+            }
+            Err(err) => {
+                let backoff = match self.current_backoff.as_mut() {
+                    Some(backoff) => backoff,
+                    None => {
+                        self.current_backoff = Some(self.builder.build());
+                        self.current_backoff.as_mut().unwrap()
+                    }
+                };
+
+                match backoff.next() {
+                    None => {
+                        self.current_backoff = None;
+                        Poll::Ready(Err(err))
+                    }
                     Some(dur) => {
                         self.notify.intercept(
-                            &e,
+                            &err,
                             dur,
                             &[
-                                ("operation", PageOperation::Next.into_static()),
+                                ("operation", ListOperation::Next.into_static()),
                                 ("path", &self.path),
                             ],
                         );
-                        tokio::time::sleep(dur).await;
-                        continue;
+                        self.sleep = Some(Box::pin(tokio::time::sleep(dur)));
+                        self.poll_next(cx)
                     }
-                },
+                }
             }
         }
     }
 }
 
-impl<P: oio::BlockingPage, I: RetryInterceptor> oio::BlockingPage for RetryWrapper<P, I> {
-    fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
+impl<P: oio::BlockingList, I: RetryInterceptor> oio::BlockingList for RetryWrapper<P, I> {
+    fn next(&mut self) -> Result<Option<oio::Entry>> {
         { || self.inner.next() }
             .retry(&self.builder)
             .when(|e| e.is_temporary())
@@ -1088,7 +1109,7 @@ impl<P: oio::BlockingPage, I: RetryInterceptor> oio::BlockingPage for RetryWrapp
                     err,
                     dur,
                     &[
-                        ("operation", PageOperation::BlockingNext.into_static()),
+                        ("operation", ListOperation::BlockingNext.into_static()),
                         ("path", &self.path),
                     ],
                 );
@@ -1139,22 +1160,22 @@ mod tests {
         attempt: Arc<Mutex<usize>>,
     }
 
-    #[async_trait]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     impl Accessor for MockService {
         type Reader = MockReader;
-        type BlockingReader = ();
         type Writer = ();
+        type Lister = MockLister;
+        type BlockingReader = ();
         type BlockingWriter = ();
-        type Pager = MockPager;
-        type BlockingPager = ();
+        type BlockingLister = ();
 
         fn info(&self) -> AccessorInfo {
             let mut am = AccessorInfo::default();
             am.set_native_capability(Capability {
                 read: true,
                 list: true,
-                list_with_delimiter_slash: true,
-                list_without_delimiter: true,
+                list_with_recursive: true,
                 batch: true,
                 ..Default::default()
             });
@@ -1164,7 +1185,7 @@ mod tests {
 
         async fn read(&self, _: &str, _: OpRead) -> Result<(RpRead, Self::Reader)> {
             Ok((
-                RpRead::new(13),
+                RpRead::new(),
                 MockReader {
                     attempt: self.attempt.clone(),
                     pos: 0,
@@ -1172,9 +1193,9 @@ mod tests {
             ))
         }
 
-        async fn list(&self, _: &str, _: OpList) -> Result<(RpList, Self::Pager)> {
-            let pager = MockPager::default();
-            Ok((RpList::default(), pager))
+        async fn list(&self, _: &str, _: OpList) -> Result<(RpList, Self::Lister)> {
+            let lister = MockLister::default();
+            Ok((RpList::default(), lister))
         }
 
         async fn batch(&self, op: OpBatch) -> Result<RpBatch> {
@@ -1291,42 +1312,46 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Default)]
-    struct MockPager {
+    struct MockLister {
         attempt: usize,
     }
-    #[async_trait]
-    impl oio::Page for MockPager {
-        async fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
+
+    impl oio::List for MockLister {
+        fn poll_next(&mut self, _: &mut Context<'_>) -> Poll<Result<Option<oio::Entry>>> {
             self.attempt += 1;
-            match self.attempt {
+            let result = match self.attempt {
                 1 => Err(Error::new(
                     ErrorKind::RateLimited,
-                    "retryable rate limited error from pager",
+                    "retryable rate limited error from lister",
                 )
                 .set_temporary()),
-                2 => {
-                    let entries = vec![
-                        oio::Entry::new("hello", Metadata::new(EntryMode::FILE)),
-                        oio::Entry::new("world", Metadata::new(EntryMode::FILE)),
-                    ];
-                    Ok(Some(entries))
-                }
-                3 => Err(
+                2 => Ok(Some(oio::Entry::new(
+                    "hello",
+                    Metadata::new(EntryMode::FILE),
+                ))),
+                3 => Ok(Some(oio::Entry::new(
+                    "world",
+                    Metadata::new(EntryMode::FILE),
+                ))),
+                4 => Err(
                     Error::new(ErrorKind::Unexpected, "retryable internal server error")
                         .set_temporary(),
                 ),
-                4 => {
-                    let entries = vec![
-                        oio::Entry::new("2023/", Metadata::new(EntryMode::DIR)),
-                        oio::Entry::new("0208/", Metadata::new(EntryMode::DIR)),
-                    ];
-                    Ok(Some(entries))
-                }
-                5 => Ok(None),
+                5 => Ok(Some(oio::Entry::new(
+                    "2023/",
+                    Metadata::new(EntryMode::DIR),
+                ))),
+                6 => Ok(Some(oio::Entry::new(
+                    "0208/",
+                    Metadata::new(EntryMode::DIR),
+                ))),
+                7 => Ok(None),
                 _ => {
                     unreachable!()
                 }
-            }
+            };
+
+            Poll::Ready(result)
         }
     }
 

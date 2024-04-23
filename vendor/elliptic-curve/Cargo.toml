@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.65"
 name = "elliptic-curve"
-version = "0.13.6"
+version = "0.13.7"
 authors = ["RustCrypto Developers"]
 description = """
 General purpose Elliptic Curve Cryptography (ECC) support, including types

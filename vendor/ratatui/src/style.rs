@@ -16,9 +16,9 @@
 //! use ratatui::prelude::*;
 //!
 //! let heading_style = Style::new()
-//!    .fg(Color::Black)
-//!    .bg(Color::Green)
-//!    .add_modifier(Modifier::ITALIC | Modifier::BOLD);
+//!     .fg(Color::Black)
+//!     .bg(Color::Green)
+//!     .add_modifier(Modifier::ITALIC | Modifier::BOLD);
 //! let span = Span::styled("hello", heading_style);
 //! ```
 //!
@@ -44,16 +44,24 @@
 //! use ratatui::{prelude::*, widgets::*};
 //!
 //! assert_eq!(
-//!    "hello".red().on_blue().bold(),
+//!     "hello".red().on_blue().bold(),
 //!     Span::styled(
 //!         "hello",
-//!         Style::default().fg(Color::Red).bg(Color::Blue).add_modifier(Modifier::BOLD))
+//!         Style::default()
+//!             .fg(Color::Red)
+//!             .bg(Color::Blue)
+//!             .add_modifier(Modifier::BOLD)
+//!     )
 //! );
 //!
 //! assert_eq!(
 //!     Paragraph::new("hello").red().on_blue().bold(),
-//!     Paragraph::new("hello")
-//!         .style(Style::default().fg(Color::Red).bg(Color::Blue).add_modifier(Modifier::BOLD))
+//!     Paragraph::new("hello").style(
+//!         Style::default()
+//!             .fg(Color::Red)
+//!             .bg(Color::Blue)
+//!             .add_modifier(Modifier::BOLD)
+//!     )
 //! );
 //! ```
 //!
@@ -64,15 +72,20 @@ use std::fmt::{self, Debug};
 
 use bitflags::bitflags;
 
-mod stylize;
-pub use stylize::{Styled, Stylize};
 mod color;
+mod stylize;
+
 pub use color::Color;
+pub use stylize::{Styled, Stylize};
+pub mod palette;
 
 bitflags! {
     /// Modifier changes the way a piece of text is displayed.
     ///
     /// They are bitflags so they can easily be composed.
+    ///
+    /// `From<Modifier> for Style` is implemented so you can use `Modifier` anywhere that accepts
+    /// `Into<Style>`.
     ///
     /// ## Examples
     ///
@@ -113,7 +126,7 @@ impl fmt::Debug for Modifier {
 /// Style lets you control the main characteristics of the displayed elements.
 ///
 /// ```rust
-/// use ratatui::{prelude::*};
+/// use ratatui::prelude::*;
 ///
 /// Style::default()
 ///     .fg(Color::Black)
@@ -130,23 +143,43 @@ impl fmt::Debug for Modifier {
 ///
 /// For more information about the style shorthands, see the [`Stylize`] trait.
 ///
+/// We implement conversions from [`Color`] and [`Modifier`] to [`Style`] so you can use them
+/// anywhere that accepts `Into<Style>`.
+///
+/// ```rust
+/// # use ratatui::prelude::*;
+/// Line::styled("hello", Style::new().fg(Color::Red));
+/// // simplifies to
+/// Line::styled("hello", Color::Red);
+///
+/// Line::styled("hello", Style::new().add_modifier(Modifier::BOLD));
+/// // simplifies to
+/// Line::styled("hello", Modifier::BOLD);
+/// ```
+///
 /// Styles represents an incremental change. If you apply the styles S1, S2, S3 to a cell of the
 /// terminal buffer, the style of this cell will be the result of the merge of S1, S2 and S3, not
 /// just S3.
 ///
 /// ```rust
-/// use ratatui::{prelude::*};
+/// use ratatui::prelude::*;
 ///
 /// let styles = [
-///     Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD | Modifier::ITALIC),
-///     Style::default().bg(Color::Red).add_modifier(Modifier::UNDERLINED),
+///     Style::default()
+///         .fg(Color::Blue)
+///         .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+///     Style::default()
+///         .bg(Color::Red)
+///         .add_modifier(Modifier::UNDERLINED),
 ///     #[cfg(feature = "underline-color")]
 ///     Style::default().underline_color(Color::Green),
-///     Style::default().fg(Color::Yellow).remove_modifier(Modifier::ITALIC),
+///     Style::default()
+///         .fg(Color::Yellow)
+///         .remove_modifier(Modifier::ITALIC),
 /// ];
 /// let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
 /// for style in &styles {
-///   buffer.get_mut(0, 0).set_style(*style);
+///     buffer.get_mut(0, 0).set_style(*style);
 /// }
 /// assert_eq!(
 ///     Style {
@@ -165,15 +198,17 @@ impl fmt::Debug for Modifier {
 /// reset all properties until that point use [`Style::reset`].
 ///
 /// ```
-/// use ratatui::{prelude::*};
+/// use ratatui::prelude::*;
 ///
 /// let styles = [
-///     Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD | Modifier::ITALIC),
+///     Style::default()
+///         .fg(Color::Blue)
+///         .add_modifier(Modifier::BOLD | Modifier::ITALIC),
 ///     Style::reset().fg(Color::Yellow),
 /// ];
 /// let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
 /// for style in &styles {
-///   buffer.get_mut(0, 0).set_style(*style);
+///     buffer.get_mut(0, 0).set_style(*style);
 /// }
 /// assert_eq!(
 ///     Style {
@@ -211,10 +246,11 @@ impl Styled for Style {
         *self
     }
 
-    fn set_style(self, style: Style) -> Self::Item {
+    fn set_style<S: Into<Style>>(self, style: S) -> Self::Item {
         self.patch(style)
     }
 }
+
 impl Style {
     pub const fn new() -> Style {
         Style {
@@ -249,6 +285,7 @@ impl Style {
     /// let diff = Style::default().fg(Color::Red);
     /// assert_eq!(style.patch(diff), Style::default().fg(Color::Red));
     /// ```
+    #[must_use = "`fg` returns the modified style without modifying the original"]
     pub const fn fg(mut self, color: Color) -> Style {
         self.fg = Some(color);
         self
@@ -264,6 +301,7 @@ impl Style {
     /// let diff = Style::default().bg(Color::Red);
     /// assert_eq!(style.patch(diff), Style::default().bg(Color::Red));
     /// ```
+    #[must_use = "`bg` returns the modified style without modifying the original"]
     pub const fn bg(mut self, color: Color) -> Style {
         self.bg = Some(color);
         self
@@ -283,11 +321,21 @@ impl Style {
     ///
     /// ```rust
     /// # use ratatui::prelude::*;
-    /// let style = Style::default().underline_color(Color::Blue).add_modifier(Modifier::UNDERLINED);
-    /// let diff = Style::default().underline_color(Color::Red).add_modifier(Modifier::UNDERLINED);
-    /// assert_eq!(style.patch(diff), Style::default().underline_color(Color::Red).add_modifier(Modifier::UNDERLINED));
+    /// let style = Style::default()
+    ///     .underline_color(Color::Blue)
+    ///     .add_modifier(Modifier::UNDERLINED);
+    /// let diff = Style::default()
+    ///     .underline_color(Color::Red)
+    ///     .add_modifier(Modifier::UNDERLINED);
+    /// assert_eq!(
+    ///     style.patch(diff),
+    ///     Style::default()
+    ///         .underline_color(Color::Red)
+    ///         .add_modifier(Modifier::UNDERLINED)
+    /// );
     /// ```
     #[cfg(feature = "underline-color")]
+    #[must_use = "`underline_color` returns the modified style without modifying the original"]
     pub const fn underline_color(mut self, color: Color) -> Style {
         self.underline_color = Some(color);
         self
@@ -307,6 +355,7 @@ impl Style {
     /// assert_eq!(patched.add_modifier, Modifier::BOLD | Modifier::ITALIC);
     /// assert_eq!(patched.sub_modifier, Modifier::empty());
     /// ```
+    #[must_use = "`add_modifier` returns the modified style without modifying the original"]
     pub const fn add_modifier(mut self, modifier: Modifier) -> Style {
         self.sub_modifier = self.sub_modifier.difference(modifier);
         self.add_modifier = self.add_modifier.union(modifier);
@@ -327,6 +376,7 @@ impl Style {
     /// assert_eq!(patched.add_modifier, Modifier::BOLD);
     /// assert_eq!(patched.sub_modifier, Modifier::ITALIC);
     /// ```
+    #[must_use = "`remove_modifier` returns the modified style without modifying the original"]
     pub const fn remove_modifier(mut self, modifier: Modifier) -> Style {
         self.add_modifier = self.add_modifier.difference(modifier);
         self.sub_modifier = self.sub_modifier.union(modifier);
@@ -336,6 +386,9 @@ impl Style {
     /// Results in a combined style that is equivalent to applying the two individual styles to
     /// a style one after the other.
     ///
+    /// `style` accepts any type that is convertible to [`Style`] (e.g. [`Style`], [`Color`], or
+    /// your own type that implements [`Into<Style>`]).
+    ///
     /// ## Examples
     /// ```
     /// # use ratatui::prelude::*;
@@ -344,9 +397,12 @@ impl Style {
     /// let combined = style_1.patch(style_2);
     /// assert_eq!(
     ///     Style::default().patch(style_1).patch(style_2),
-    ///     Style::default().patch(combined));
+    ///     Style::default().patch(combined)
+    /// );
     /// ```
-    pub fn patch(mut self, other: Style) -> Style {
+    #[must_use = "`patch` returns the modified style without modifying the original"]
+    pub fn patch<S: Into<Style>>(mut self, other: S) -> Style {
+        let other = other.into();
         self.fg = other.fg.or(self.fg);
         self.bg = other.bg.or(self.bg);
 
@@ -361,6 +417,134 @@ impl Style {
         self.sub_modifier.insert(other.sub_modifier);
 
         self
+    }
+}
+
+impl From<Color> for Style {
+    /// Creates a new `Style` with the given foreground color.
+    ///
+    /// To specify a foreground and background color, use the `from((fg, bg))` constructor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ratatui::prelude::*;
+    /// let style = Style::from(Color::Red);
+    /// ```
+    fn from(color: Color) -> Self {
+        Self::new().fg(color)
+    }
+}
+
+impl From<(Color, Color)> for Style {
+    /// Creates a new `Style` with the given foreground and background colors.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ratatui::prelude::*;
+    /// // red foreground, blue background
+    /// let style = Style::from((Color::Red, Color::Blue));
+    /// // default foreground, blue background
+    /// let style = Style::from((Color::Reset, Color::Blue));
+    /// ```
+    fn from((fg, bg): (Color, Color)) -> Self {
+        Self::new().fg(fg).bg(bg)
+    }
+}
+
+impl From<Modifier> for Style {
+    /// Creates a new `Style` with the given modifier added.
+    ///
+    /// To specify multiple modifiers, use the `|` operator.
+    ///
+    /// To specify modifiers to add and remove, use the `from((add_modifier, sub_modifier))`
+    /// constructor.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ratatui::prelude::*;
+    /// // add bold and italic
+    /// let style = Style::from(Modifier::BOLD|Modifier::ITALIC);
+    fn from(modifier: Modifier) -> Self {
+        Self::new().add_modifier(modifier)
+    }
+}
+
+impl From<(Modifier, Modifier)> for Style {
+    /// Creates a new `Style` with the given modifiers added and removed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ratatui::prelude::*;
+    /// // add bold and italic, remove dim
+    /// let style = Style::from((Modifier::BOLD | Modifier::ITALIC, Modifier::DIM));
+    /// ```
+    fn from((add_modifier, sub_modifier): (Modifier, Modifier)) -> Self {
+        Self::new()
+            .add_modifier(add_modifier)
+            .remove_modifier(sub_modifier)
+    }
+}
+
+impl From<(Color, Modifier)> for Style {
+    /// Creates a new `Style` with the given foreground color and modifier added.
+    ///
+    /// To specify multiple modifiers, use the `|` operator.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ratatui::prelude::*;
+    /// // red foreground, add bold and italic
+    /// let style = Style::from((Color::Red, Modifier::BOLD | Modifier::ITALIC));
+    /// ```
+    fn from((fg, modifier): (Color, Modifier)) -> Self {
+        Self::new().fg(fg).add_modifier(modifier)
+    }
+}
+
+impl From<(Color, Color, Modifier)> for Style {
+    /// Creates a new `Style` with the given foreground and background colors and modifier added.
+    ///
+    /// To specify multiple modifiers, use the `|` operator.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ratatui::prelude::*;
+    /// // red foreground, blue background, add bold and italic
+    /// let style = Style::from((Color::Red, Color::Blue, Modifier::BOLD | Modifier::ITALIC));
+    /// ```
+    fn from((fg, bg, modifier): (Color, Color, Modifier)) -> Self {
+        Self::new().fg(fg).bg(bg).add_modifier(modifier)
+    }
+}
+
+impl From<(Color, Color, Modifier, Modifier)> for Style {
+    /// Creates a new `Style` with the given foreground and background colors and modifiers added
+    /// and removed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use ratatui::prelude::*;
+    /// // red foreground, blue background, add bold and italic, remove dim
+    /// let style = Style::from((
+    ///     Color::Red,
+    ///     Color::Blue,
+    ///     Modifier::BOLD | Modifier::ITALIC,
+    ///     Modifier::DIM,
+    /// ));
+    /// ```
+    fn from((fg, bg, add_modifier, sub_modifier): (Color, Color, Modifier, Modifier)) -> Self {
+        Self::new()
+            .fg(fg)
+            .bg(bg)
+            .add_modifier(add_modifier)
+            .remove_modifier(sub_modifier)
     }
 }
 
@@ -624,5 +808,80 @@ mod tests {
 
         // reset
         assert_eq!(Style::new().reset(), Style::reset());
+    }
+
+    #[test]
+    fn from_color() {
+        assert_eq!(Style::from(Color::Red), Style::new().fg(Color::Red));
+    }
+
+    #[test]
+    fn from_color_color() {
+        assert_eq!(
+            Style::from((Color::Red, Color::Blue)),
+            Style::new().fg(Color::Red).bg(Color::Blue)
+        );
+    }
+
+    #[test]
+    fn from_modifier() {
+        assert_eq!(
+            Style::from(Modifier::BOLD | Modifier::ITALIC),
+            Style::new()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::ITALIC)
+        );
+    }
+
+    #[test]
+    fn from_modifier_modifier() {
+        assert_eq!(
+            Style::from((Modifier::BOLD | Modifier::ITALIC, Modifier::DIM)),
+            Style::new()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::ITALIC)
+                .remove_modifier(Modifier::DIM)
+        );
+    }
+
+    #[test]
+    fn from_color_modifier() {
+        assert_eq!(
+            Style::from((Color::Red, Modifier::BOLD | Modifier::ITALIC)),
+            Style::new()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::ITALIC)
+        );
+    }
+
+    #[test]
+    fn from_color_color_modifier() {
+        assert_eq!(
+            Style::from((Color::Red, Color::Blue, Modifier::BOLD | Modifier::ITALIC)),
+            Style::new()
+                .fg(Color::Red)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::ITALIC)
+        );
+    }
+
+    #[test]
+    fn from_color_color_modifier_modifier() {
+        assert_eq!(
+            Style::from((
+                Color::Red,
+                Color::Blue,
+                Modifier::BOLD | Modifier::ITALIC,
+                Modifier::DIM
+            )),
+            Style::new()
+                .fg(Color::Red)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::ITALIC)
+                .remove_modifier(Modifier::DIM)
+        );
     }
 }

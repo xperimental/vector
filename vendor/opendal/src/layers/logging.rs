@@ -211,15 +211,16 @@ pub struct LoggingAccessor<A: Accessor> {
 
 static LOGGING_TARGET: &str = "opendal::services";
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for LoggingAccessor<A> {
     type Inner = A;
     type Reader = LoggingReader<A::Reader>;
     type BlockingReader = LoggingReader<A::BlockingReader>;
     type Writer = LoggingWriter<A::Writer>;
     type BlockingWriter = LoggingWriter<A::BlockingWriter>;
-    type Pager = LoggingPager<A::Pager>;
-    type BlockingPager = LoggingPager<A::BlockingPager>;
+    type Lister = LoggingLister<A::Lister>;
+    type BlockingLister = LoggingLister<A::BlockingLister>;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -525,7 +526,7 @@ impl<A: Accessor> LayeredAccessor for LoggingAccessor<A> {
             .await
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         debug!(
             target: LOGGING_TARGET,
             "service={} operation={} path={} -> started",
@@ -545,7 +546,7 @@ impl<A: Accessor> LayeredAccessor for LoggingAccessor<A> {
                         Operation::List,
                         path
                     );
-                    let streamer = LoggingPager::new(self.ctx.clone(), path, Operation::List, v);
+                    let streamer = LoggingLister::new(self.ctx.clone(), path, Operation::List, v);
                     Ok((rp, streamer))
                 }
                 Err(err) => {
@@ -914,7 +915,7 @@ impl<A: Accessor> LayeredAccessor for LoggingAccessor<A> {
             })
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         debug!(
             target: LOGGING_TARGET,
             "service={} operation={} path={} -> started",
@@ -933,7 +934,7 @@ impl<A: Accessor> LayeredAccessor for LoggingAccessor<A> {
                     Operation::BlockingList,
                     path
                 );
-                let li = LoggingPager::new(self.ctx.clone(), path, Operation::BlockingList, v);
+                let li = LoggingLister::new(self.ctx.clone(), path, Operation::BlockingList, v);
                 (rp, li)
             })
             .map_err(|err| {
@@ -991,17 +992,20 @@ impl<R> Drop for LoggingReader<R> {
 
 impl<R: oio::Read> oio::Read for LoggingReader<R> {
     fn poll_read(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize>> {
+        let buf_size = buf.len();
+
         match self.inner.poll_read(cx, buf) {
             Poll::Ready(res) => match res {
                 Ok(n) => {
                     self.read += n as u64;
                     trace!(
                         target: LOGGING_TARGET,
-                        "service={} operation={} path={} read={} -> data read {}B ",
+                        "service={} operation={} path={} read={} -> buf size: {}B, read {}B ",
                         self.ctx.scheme,
                         ReadOperation::Read,
                         self.path,
                         self.read,
+                        buf_size,
                         n
                     );
                     Poll::Ready(Ok(n))
@@ -1011,7 +1015,7 @@ impl<R: oio::Read> oio::Read for LoggingReader<R> {
                         log!(
                             target: LOGGING_TARGET,
                             lvl,
-                            "service={} operation={} path={} read={} -> data read failed: {}",
+                            "service={} operation={} path={} read={} -> read failed: {}",
                             self.ctx.scheme,
                             ReadOperation::Read,
                             self.path,
@@ -1025,11 +1029,12 @@ impl<R: oio::Read> oio::Read for LoggingReader<R> {
             Poll::Pending => {
                 trace!(
                     target: LOGGING_TARGET,
-                    "service={} operation={} path={} read={} -> data read pending",
+                    "service={} operation={} path={} read={} -> buf size: {}B, read pending",
                     self.ctx.scheme,
                     ReadOperation::Read,
                     self.path,
-                    self.read
+                    self.read,
+                    buf_size
                 );
                 Poll::Pending
             }
@@ -1042,7 +1047,7 @@ impl<R: oio::Read> oio::Read for LoggingReader<R> {
                 Ok(n) => {
                     trace!(
                         target: LOGGING_TARGET,
-                        "service={} operation={} path={} read={} -> data seek to offset {n}",
+                        "service={} operation={} path={} read={} -> seek to {pos:?}, current offset {n}",
                         self.ctx.scheme,
                         ReadOperation::Seek,
                         self.path,
@@ -1055,7 +1060,7 @@ impl<R: oio::Read> oio::Read for LoggingReader<R> {
                         log!(
                             target: LOGGING_TARGET,
                             lvl,
-                            "service={} operation={} path={} read={} -> data read failed: {}",
+                            "service={} operation={} path={} read={} -> seek to {pos:?} failed: {}",
                             self.ctx.scheme,
                             ReadOperation::Seek,
                             self.path,
@@ -1069,7 +1074,7 @@ impl<R: oio::Read> oio::Read for LoggingReader<R> {
             Poll::Pending => {
                 trace!(
                     target: LOGGING_TARGET,
-                    "service={} operation={} path={} read={} -> data seek pending",
+                    "service={} operation={} path={} read={} -> seek to {pos:?} pending",
                     self.ctx.scheme,
                     ReadOperation::Seek,
                     self.path,
@@ -1087,7 +1092,7 @@ impl<R: oio::Read> oio::Read for LoggingReader<R> {
                     self.read += bs.len() as u64;
                     trace!(
                         target: LOGGING_TARGET,
-                        "service={} operation={} path={} read={} -> data read {}B",
+                        "service={} operation={} path={} read={} -> next returns {}B",
                         self.ctx.scheme,
                         ReadOperation::Next,
                         self.path,
@@ -1101,7 +1106,7 @@ impl<R: oio::Read> oio::Read for LoggingReader<R> {
                         log!(
                             target: LOGGING_TARGET,
                             lvl,
-                            "service={} operation={} path={} read={} -> data read failed: {}",
+                            "service={} operation={} path={} read={} -> next failed: {}",
                             self.ctx.scheme,
                             ReadOperation::Next,
                             self.path,
@@ -1111,12 +1116,22 @@ impl<R: oio::Read> oio::Read for LoggingReader<R> {
                     }
                     Poll::Ready(Some(Err(err)))
                 }
-                None => Poll::Ready(None),
+                None => {
+                    trace!(
+                        target: LOGGING_TARGET,
+                        "service={} operation={} path={} read={} -> next returns None",
+                        self.ctx.scheme,
+                        ReadOperation::Next,
+                        self.path,
+                        self.read,
+                    );
+                    Poll::Ready(None)
+                }
             },
             Poll::Pending => {
                 trace!(
                     target: LOGGING_TARGET,
-                    "service={} operation={} path={} read={} -> data read pending",
+                    "service={} operation={} path={} read={} -> next returns pending",
                     self.ctx.scheme,
                     ReadOperation::Next,
                     self.path,
@@ -1251,7 +1266,6 @@ impl<W> LoggingWriter<W> {
     }
 }
 
-#[async_trait]
 impl<W: oio::Write> oio::Write for LoggingWriter<W> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         match ready!(self.inner.poll_write(cx, bs)) {
@@ -1417,7 +1431,7 @@ impl<W: oio::BlockingWrite> oio::BlockingWrite for LoggingWriter<W> {
     }
 }
 
-pub struct LoggingPager<P> {
+pub struct LoggingLister<P> {
     ctx: LoggingContext,
     path: String,
     op: Operation,
@@ -1426,7 +1440,7 @@ pub struct LoggingPager<P> {
     inner: P,
 }
 
-impl<P> LoggingPager<P> {
+impl<P> LoggingLister<P> {
     fn new(ctx: LoggingContext, path: &str, op: Operation, inner: P) -> Self {
         Self {
             ctx,
@@ -1438,7 +1452,7 @@ impl<P> LoggingPager<P> {
     }
 }
 
-impl<P> Drop for LoggingPager<P> {
+impl<P> Drop for LoggingLister<P> {
     fn drop(&mut self) {
         if self.finished {
             debug!(
@@ -1460,20 +1474,21 @@ impl<P> Drop for LoggingPager<P> {
     }
 }
 
-#[async_trait]
-impl<P: oio::Page> oio::Page for LoggingPager<P> {
-    async fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
-        let res = self.inner.next().await;
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<P: oio::List> oio::List for LoggingLister<P> {
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<oio::Entry>>> {
+        let res = ready!(self.inner.poll_next(cx));
 
         match &res {
-            Ok(Some(des)) => {
+            Ok(Some(de)) => {
                 debug!(
                     target: LOGGING_TARGET,
-                    "service={} operation={} path={} -> listed {} entries",
+                    "service={} operation={} path={} -> listed entry: {}",
                     self.ctx.scheme,
                     self.op,
                     self.path,
-                    des.len(),
+                    de.path(),
                 );
             }
             Ok(None) => {
@@ -1501,23 +1516,23 @@ impl<P: oio::Page> oio::Page for LoggingPager<P> {
             }
         };
 
-        res
+        Poll::Ready(res)
     }
 }
 
-impl<P: oio::BlockingPage> oio::BlockingPage for LoggingPager<P> {
-    fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
+impl<P: oio::BlockingList> oio::BlockingList for LoggingLister<P> {
+    fn next(&mut self) -> Result<Option<oio::Entry>> {
         let res = self.inner.next();
 
         match &res {
             Ok(Some(des)) => {
                 debug!(
                     target: LOGGING_TARGET,
-                    "service={} operation={} path={} -> got {} entries",
+                    "service={} operation={} path={} -> listed entry: {}",
                     self.ctx.scheme,
                     self.op,
                     self.path,
-                    des.len(),
+                    des.path(),
                 );
             }
             Ok(None) => {

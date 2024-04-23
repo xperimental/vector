@@ -11,7 +11,7 @@
 //!
 //! Additionally, a [`TestBackend`] is provided for testing purposes.
 //!
-//! See the [Backend Comparison] section of the [Ratatui Book] for more details on the different
+//! See the [Backend Comparison] section of the [Ratatui Website] for more details on the different
 //! backends.
 //!
 //! Each backend supports a number of features, such as [raw mode](#raw-mode), [alternate
@@ -26,6 +26,7 @@
 //!
 //! ```rust,no_run
 //! use std::io::stdout;
+//!
 //! use ratatui::prelude::*;
 //!
 //! let backend = CrosstermBackend::new(stdout());
@@ -37,7 +38,7 @@
 //! # std::io::Result::Ok(())
 //! ```
 //!
-//! See the the [examples] directory for more examples.
+//! See the the [Examples] directory for more examples.
 //!
 //! # Raw Mode
 //!
@@ -95,10 +96,10 @@
 //! [Crossterm]: https://crates.io/crates/crossterm
 //! [Termion]: https://crates.io/crates/termion
 //! [Termwiz]: https://crates.io/crates/termwiz
-//! [examples]: https://github.com/ratatui-org/ratatui/tree/main/examples#readme
+//! [Examples]: https://github.com/ratatui-org/ratatui/tree/main/examples/README.md
 //! [Backend Comparison]:
-//!     https://ratatui-org.github.io/ratatui-book/concepts/backends/comparison.html
-//! [Ratatui Book]: https://ratatui-org.github.io/ratatui-book
+//!     https://ratatui.rs/concepts/backends/comparison/
+//! [Ratatui Website]: https://ratatui-org.github.io/ratatui-book
 use std::io;
 
 use strum::{Display, EnumString};
@@ -228,7 +229,7 @@ pub trait Backend {
     /// [`get_cursor`]: Backend::get_cursor
     fn set_cursor(&mut self, x: u16, y: u16) -> io::Result<()>;
 
-    /// Clears the whole terminal scree
+    /// Clears the whole terminal screen
     ///
     /// # Example
     ///

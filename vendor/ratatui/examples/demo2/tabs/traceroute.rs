@@ -4,18 +4,22 @@ use ratatui::{
     widgets::{canvas::*, *},
 };
 
-use crate::{layout, RgbSwatch, THEME};
+use crate::{RgbSwatch, THEME};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TracerouteTab {
-    selected_row: usize,
+    row_index: usize,
 }
 
 impl TracerouteTab {
-    pub fn new(selected_row: usize) -> Self {
-        Self {
-            selected_row: selected_row % HOPS.len(),
-        }
+    /// Select the previous row (with wrap around).
+    pub fn prev_row(&mut self) {
+        self.row_index = self.row_index.saturating_add(HOPS.len() - 1) % HOPS.len();
+    }
+
+    /// Select the next row (with wrap around).
+    pub fn next_row(&mut self) {
+        self.row_index = self.row_index.saturating_add(1) % HOPS.len();
     }
 }
 
@@ -28,14 +32,14 @@ impl Widget for TracerouteTab {
         });
         Clear.render(area, buf);
         Block::new().style(THEME.content).render(area, buf);
-        let area = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
-            .split(area);
-        let left_area = layout(area[0], Direction::Vertical, vec![0, 3]);
-        render_hops(self.selected_row, left_area[0], buf);
-        render_ping(self.selected_row, left_area[1], buf);
-        render_map(self.selected_row, area[1], buf);
+        let horizontal = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]);
+        let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]);
+        let [left, map] = horizontal.areas(area);
+        let [hops, pings] = vertical.areas(left);
+
+        render_hops(self.row_index, hops, buf);
+        render_ping(self.row_index, pings, buf);
+        render_map(self.row_index, map, buf);
     }
 }
 
@@ -50,9 +54,8 @@ fn render_hops(selected_row: usize, area: Rect, buf: &mut Buffer) {
         .title_alignment(Alignment::Center)
         .padding(Padding::new(1, 1, 1, 1));
     StatefulWidget::render(
-        Table::new(rows)
+        Table::new(rows, [Constraint::Max(100), Constraint::Length(15)])
             .header(Row::new(vec!["Host", "Address"]).set_style(THEME.traceroute.header))
-            .widths(&[Constraint::Max(100), Constraint::Length(15)])
             .highlight_style(THEME.traceroute.selected)
             .block(block),
         area,

@@ -19,16 +19,17 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io;
 use std::pin::Pin;
+use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 
 use bytes::Bytes;
 use futures::Future;
-use pin_project::pin_project;
+use tokio::io::ReadBuf;
 
 use crate::*;
 
-/// PageOperation is the name for APIs of pager.
+/// PageOperation is the name for APIs of lister.
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ReadOperation {
@@ -198,10 +199,13 @@ pub trait ReadExt: Read {
     fn next(&mut self) -> NextFuture<'_, Self> {
         NextFuture { reader: self }
     }
+
+    /// Build a future for `read_to_end`.
+    fn read_to_end<'a>(&'a mut self, buf: &'a mut Vec<u8>) -> ReadToEndFuture<'a, Self> {
+        ReadToEndFuture { reader: self, buf }
+    }
 }
 
-/// Make this future `!Unpin` for compatibility with async trait methods.
-#[pin_project(!Unpin)]
 pub struct ReadFuture<'a, R: Read + Unpin + ?Sized> {
     reader: &'a mut R,
     buf: &'a mut [u8],
@@ -214,13 +218,11 @@ where
     type Output = Result<usize>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<usize>> {
-        let this = self.project();
-        Pin::new(this.reader).poll_read(cx, this.buf)
+        let this = self.get_mut();
+        this.reader.poll_read(cx, this.buf)
     }
 }
 
-/// Make this future `!Unpin` for compatibility with async trait methods.
-#[pin_project(!Unpin)]
 pub struct SeekFuture<'a, R: Read + Unpin + ?Sized> {
     reader: &'a mut R,
     pos: io::SeekFrom,
@@ -233,13 +235,11 @@ where
     type Output = Result<u64>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<u64>> {
-        let this = self.project();
-        Pin::new(this.reader).poll_seek(cx, *this.pos)
+        let this = self.get_mut();
+        this.reader.poll_seek(cx, this.pos)
     }
 }
 
-/// Make this future `!Unpin` for compatibility with async trait methods.
-#[pin_project(!Unpin)]
 pub struct NextFuture<'a, R: Read + Unpin + ?Sized> {
     reader: &'a mut R,
 }
@@ -250,9 +250,52 @@ where
 {
     type Output = Option<Result<Bytes>>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes>>> {
-        let this = self.project();
-        Pin::new(this.reader).poll_next(cx)
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes>>> {
+        self.reader.poll_next(cx)
+    }
+}
+
+pub struct ReadToEndFuture<'a, R: Read + Unpin + ?Sized> {
+    reader: &'a mut R,
+    buf: &'a mut Vec<u8>,
+}
+
+impl<R> Future for ReadToEndFuture<'_, R>
+where
+    R: Read + Unpin + ?Sized,
+{
+    type Output = Result<usize>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<usize>> {
+        let this = self.get_mut();
+        let start_len = this.buf.len();
+
+        loop {
+            if this.buf.len() == this.buf.capacity() {
+                this.buf.reserve(32); // buf is full, need more space
+            }
+
+            let spare = this.buf.spare_capacity_mut();
+            let mut read_buf: ReadBuf = ReadBuf::uninit(spare);
+
+            // SAFETY: These bytes were initialized but not filled in the previous loop
+            unsafe {
+                read_buf.assume_init(read_buf.capacity());
+            }
+
+            match ready!(this.reader.poll_read(cx, read_buf.initialize_unfilled())) {
+                Ok(0) => {
+                    return Poll::Ready(Ok(this.buf.len() - start_len));
+                }
+                Ok(n) => {
+                    // SAFETY: Read API makes sure that returning `n` is correct.
+                    unsafe {
+                        this.buf.set_len(this.buf.len() + n);
+                    }
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
+        }
     }
 }
 
@@ -269,7 +312,7 @@ pub type BlockingReader = Box<dyn BlockingRead>;
 ///
 /// `Read` is required to be implemented, `Seek` and `Iterator`
 /// is optional. We use `Read` to make users life easier.
-pub trait BlockingRead: Send + Sync + 'static {
+pub trait BlockingRead: Send + Sync {
     /// Read synchronously.
     fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
 
@@ -278,6 +321,53 @@ pub trait BlockingRead: Send + Sync + 'static {
 
     /// Iterating [`Bytes`] from underlying reader.
     fn next(&mut self) -> Option<Result<Bytes>>;
+
+    /// Read all data of current reader to the end of buf.
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize> {
+        let start_len = buf.len();
+        let start_cap = buf.capacity();
+
+        loop {
+            if buf.len() == buf.capacity() {
+                buf.reserve(32); // buf is full, need more space
+            }
+
+            let spare = buf.spare_capacity_mut();
+            let mut read_buf: ReadBuf = ReadBuf::uninit(spare);
+
+            // SAFETY: These bytes were initialized but not filled in the previous loop
+            unsafe {
+                read_buf.assume_init(read_buf.capacity());
+            }
+
+            match self.read(read_buf.initialize_unfilled()) {
+                Ok(0) => return Ok(buf.len() - start_len),
+                Ok(n) => {
+                    // SAFETY: Read API makes sure that returning `n` is correct.
+                    unsafe {
+                        buf.set_len(buf.len() + n);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+
+            // The buffer might be an exact fit. Let's read into a probe buffer
+            // and see if it returns `Ok(0)`. If so, we've avoided an
+            // unnecessary doubling of the capacity. But if not, append the
+            // probe buffer to the primary buffer and let its capacity grow.
+            if buf.len() == buf.capacity() && buf.capacity() == start_cap {
+                let mut probe = [0u8; 32];
+
+                match self.read(&mut probe) {
+                    Ok(0) => return Ok(buf.len() - start_len),
+                    Ok(n) => {
+                        buf.extend_from_slice(&probe[..n]);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
 }
 
 impl BlockingRead for () {

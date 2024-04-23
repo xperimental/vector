@@ -140,6 +140,7 @@ where
 pub struct MmapOptions {
     offset: u64,
     len: Option<usize>,
+    huge: Option<u8>,
     stack: bool,
     populate: bool,
 }
@@ -281,6 +282,30 @@ impl MmapOptions {
         self
     }
 
+    /// Configures the anonymous memory map to be allocated using huge pages.
+    ///
+    /// This option corresponds to the `MAP_HUGETLB` flag on Linux. It has no effect on Windows.
+    ///
+    /// The size of the requested page can be specified in page bits. If not provided, the system
+    /// default is requested. The requested length should be a multiple of this, or the mapping
+    /// will fail.
+    ///
+    /// This option has no effect on file-backed memory maps.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use memmap2::MmapOptions;
+    ///
+    /// # fn main() -> std::io::Result<()> {
+    /// let stack = MmapOptions::new().huge(Some(21)).len(2*1024*1024).map_anon();
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn huge(&mut self, page_bits: Option<u8>) -> &mut Self {
+        self.huge = Some(page_bits.unwrap_or(0));
+        self
+    }
     /// Populate (prefault) page tables for a mapping.
     ///
     /// For a file mapping, this causes read-ahead on the file. This will help to reduce blocking on page faults later.
@@ -484,7 +509,8 @@ impl MmapOptions {
             ));
         }
 
-        MmapInner::map_anon(len, self.stack, self.populate).map(|inner| MmapMut { inner })
+        MmapInner::map_anon(len, self.stack, self.populate, self.huge)
+            .map(|inner| MmapMut { inner })
     }
 
     /// Creates a raw memory map.
@@ -1386,7 +1412,7 @@ mod test {
     extern crate tempfile;
 
     #[cfg(unix)]
-    use crate::advice::{Advice, UncheckedAdvice};
+    use crate::advice::Advice;
     use std::fs::{File, OpenOptions};
     use std::io::{Read, Write};
     use std::mem;
@@ -1943,13 +1969,16 @@ mod test {
     #[test]
     #[cfg(target_os = "linux")]
     fn advise_writes_unsafely() {
-        let mut mmap = MmapMut::map_anon(4096).unwrap();
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+
+        let mut mmap = MmapMut::map_anon(page_size).unwrap();
         mmap.as_mut().fill(255);
         let mmap = mmap.make_read_only().unwrap();
 
         let a = mmap.as_ref()[0];
         unsafe {
-            mmap.unchecked_advise(UncheckedAdvice::DontNeed).unwrap();
+            mmap.unchecked_advise(crate::UncheckedAdvice::DontNeed)
+                .unwrap();
         }
         let b = mmap.as_ref()[0];
 
@@ -1960,18 +1989,20 @@ mod test {
     #[test]
     #[cfg(target_os = "linux")]
     fn advise_writes_unsafely_to_part_of_map() {
-        let mut mmap = MmapMut::map_anon(8192).unwrap();
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
+
+        let mut mmap = MmapMut::map_anon(2 * page_size).unwrap();
         mmap.as_mut().fill(255);
         let mmap = mmap.make_read_only().unwrap();
 
         let a = mmap.as_ref()[0];
-        let b = mmap.as_ref()[4096];
+        let b = mmap.as_ref()[page_size];
         unsafe {
-            mmap.unchecked_advise_range(UncheckedAdvice::DontNeed, 4096, 4096)
+            mmap.unchecked_advise_range(crate::UncheckedAdvice::DontNeed, page_size, page_size)
                 .unwrap();
         }
         let c = mmap.as_ref()[0];
-        let d = mmap.as_ref()[4096];
+        let d = mmap.as_ref()[page_size];
 
         assert_eq!(a, 255);
         assert_eq!(b, 255);

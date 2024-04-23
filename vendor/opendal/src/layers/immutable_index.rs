@@ -17,7 +17,9 @@
 
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::mem;
+use std::task::Context;
+use std::task::Poll;
+use std::vec::IntoIter;
 
 use async_trait::async_trait;
 
@@ -133,15 +135,16 @@ impl<A: Accessor> ImmutableIndexAccessor<A> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for ImmutableIndexAccessor<A> {
     type Inner = A;
     type Reader = A::Reader;
     type BlockingReader = A::BlockingReader;
     type Writer = A::Writer;
     type BlockingWriter = A::BlockingWriter;
-    type Pager = ImmutableDir;
-    type BlockingPager = ImmutableDir;
+    type Lister = ImmutableDir;
+    type BlockingLister = ImmutableDir;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -153,8 +156,7 @@ impl<A: Accessor> LayeredAccessor for ImmutableIndexAccessor<A> {
 
         let cap = meta.full_capability_mut();
         cap.list = true;
-        cap.list_with_delimiter_slash = true;
-        cap.list_without_delimiter = true;
+        cap.list_with_recursive = true;
 
         meta
     }
@@ -163,21 +165,16 @@ impl<A: Accessor> LayeredAccessor for ImmutableIndexAccessor<A> {
         self.inner.read(path, args).await
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         let mut path = path;
         if path == "/" {
             path = ""
         }
 
-        let idx = if args.delimiter() == "/" {
-            self.children_hierarchy(path)
-        } else if args.delimiter().is_empty() {
+        let idx = if args.recursive() {
             self.children_flat(path)
         } else {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                &format!("delimiter {} is not supported", args.delimiter()),
-            ));
+            self.children_hierarchy(path)
         };
 
         Ok((RpList::default(), ImmutableDir::new(idx)))
@@ -195,21 +192,16 @@ impl<A: Accessor> LayeredAccessor for ImmutableIndexAccessor<A> {
         self.inner.blocking_write(path, args)
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         let mut path = path;
         if path == "/" {
             path = ""
         }
 
-        let idx = if args.delimiter() == "/" {
-            self.children_hierarchy(path)
-        } else if args.delimiter().is_empty() {
+        let idx = if args.recursive() {
             self.children_flat(path)
         } else {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                &format!("delimiter {} is not supported", args.delimiter()),
-            ));
+            self.children_hierarchy(path)
         };
 
         Ok((RpList::default(), ImmutableDir::new(idx)))
@@ -217,47 +209,38 @@ impl<A: Accessor> LayeredAccessor for ImmutableIndexAccessor<A> {
 }
 
 pub struct ImmutableDir {
-    idx: Vec<String>,
+    idx: IntoIter<String>,
 }
 
 impl ImmutableDir {
     fn new(idx: Vec<String>) -> Self {
-        Self { idx }
-    }
-
-    fn inner_next_page(&mut self) -> Option<Vec<oio::Entry>> {
-        if self.idx.is_empty() {
-            return None;
+        Self {
+            idx: idx.into_iter(),
         }
+    }
 
-        let vs = mem::take(&mut self.idx);
-
-        Some(
-            vs.into_iter()
-                .map(|v| {
-                    let mode = if v.ends_with('/') {
-                        EntryMode::DIR
-                    } else {
-                        EntryMode::FILE
-                    };
-                    let meta = Metadata::new(mode);
-                    oio::Entry::with(v, meta)
-                })
-                .collect(),
-        )
+    fn inner_next(&mut self) -> Option<oio::Entry> {
+        self.idx.next().map(|v| {
+            let mode = if v.ends_with('/') {
+                EntryMode::DIR
+            } else {
+                EntryMode::FILE
+            };
+            let meta = Metadata::new(mode);
+            oio::Entry::with(v, meta)
+        })
     }
 }
 
-#[async_trait]
-impl oio::Page for ImmutableDir {
-    async fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
-        Ok(self.inner_next_page())
+impl oio::List for ImmutableDir {
+    fn poll_next(&mut self, _: &mut Context<'_>) -> Poll<Result<Option<oio::Entry>>> {
+        Poll::Ready(Ok(self.inner_next()))
     }
 }
 
-impl oio::BlockingPage for ImmutableDir {
-    fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
-        Ok(self.inner_next_page())
+impl oio::BlockingList for ImmutableDir {
+    fn next(&mut self) -> Result<Option<oio::Entry>> {
+        Ok(self.inner_next())
     }
 }
 
@@ -333,7 +316,7 @@ mod tests {
         .layer(iil)
         .finish();
 
-        let mut ds = op.lister_with("/").delimiter("").await?;
+        let mut ds = op.lister_with("/").recursive(true).await?;
         let mut set = HashSet::new();
         let mut map = HashMap::new();
         while let Some(entry) = ds.try_next().await? {
@@ -435,7 +418,7 @@ mod tests {
         .layer(iil)
         .finish();
 
-        let mut ds = op.lister_with("/").delimiter("").await?;
+        let mut ds = op.lister_with("/").recursive(true).await?;
 
         let mut map = HashMap::new();
         let mut set = HashSet::new();

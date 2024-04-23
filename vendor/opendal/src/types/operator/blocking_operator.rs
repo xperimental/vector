@@ -15,11 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::io::Read;
-
 use bytes::Bytes;
 
 use super::operator_functions::*;
+use crate::raw::oio::BlockingRead;
 use crate::raw::oio::WriteBuf;
 use crate::raw::*;
 use crate::*;
@@ -34,7 +33,7 @@ use crate::*;
 ///
 /// Read more backend init examples in [`services`]
 ///
-/// ```
+/// ```rust
 /// # use anyhow::Result;
 /// use opendal::services::Fs;
 /// use opendal::BlockingOperator;
@@ -59,8 +58,8 @@ use crate::*;
 ///
 /// Some services like s3, gcs doesn't have native blocking supports, we can use [`layers::BlockingLayer`]
 /// to wrap the async operator to make it blocking.
-///
-/// ```rust
+#[cfg_attr(feature = "layers-blocking", doc = "```rust")]
+#[cfg_attr(not(feature = "layers-blocking"), doc = "```ignore")]
 /// # use anyhow::Result;
 /// use opendal::layers::BlockingLayer;
 /// use opendal::services::S3;
@@ -143,7 +142,7 @@ impl BlockingOperator {
 
 /// # Operator blocking API.
 impl BlockingOperator {
-    /// Get current path's metadata.
+    /// Get given path's metadata.
     ///
     /// # Notes
     ///
@@ -151,7 +150,35 @@ impl BlockingOperator {
     /// [`lister_with`] with `metakey` query like `Metakey::ContentLength | Metakey::LastModified`
     /// so that we can avoid extra requests.
     ///
+    /// # Behavior
+    ///
+    /// ## Services that support `create_dir`
+    ///
+    /// `test` and `test/` may vary in some services such as S3. However, on a local file system,
+    /// they're identical. Therefore, the behavior of `stat("test")` and `stat("test/")` might differ
+    /// in certain edge cases. Always use `stat("test/")` when you need to access a directory if possible.
+    ///
+    /// Here are the behavior list:
+    ///
+    /// | Case                   | Path            | Result                                     |
+    /// |------------------------|-----------------|--------------------------------------------|
+    /// | stat existing dir      | `abc/`          | Metadata with dir mode                     |
+    /// | stat existing file     | `abc/def_file`  | Metadata with file mode                    |
+    /// | stat dir without `/`   | `abc/def_dir`   | Error `NotFound` or metadata with dir mode |
+    /// | stat file with `/`     | `abc/def_file/` | Error `NotFound`                           |
+    /// | stat not existing path | `xyz`           | Error `NotFound`                           |
+    ///
+    /// Refer to [RFC: List Prefix][crate::docs::rfcs::rfc_3243_list_prefix] for more details.
+    ///
+    /// ## Services that not support `create_dir`
+    ///
+    /// For services that not support `create_dir`, `stat("test/")` will return `NotFound` even
+    /// when `test/abc` exists since the service won't have the concept of dir. There is nothing
+    /// we can do about this.
+    ///
     /// # Examples
+    ///
+    /// ## Check if file exists
     ///
     /// ```
     /// # use anyhow::Result;
@@ -172,29 +199,61 @@ impl BlockingOperator {
         self.stat_with(path).call()
     }
 
-    /// Get current path's metadata **without cache** directly with extra options.
+    /// Get given path's metadata with extra options.
     ///
     /// # Notes
     ///
-    /// Use `stat` if you:
+    /// For fetch metadata of entries returned by [`Lister`], it's better to use [`list_with`] and
+    /// [`lister_with`] with `metakey` query like `Metakey::ContentLength | Metakey::LastModified`
+    /// so that we can avoid extra requests.
     ///
-    /// - Want to detect the outside changes of path.
-    /// - Don't want to read from cached metadata.
+    /// # Behavior
     ///
-    /// You may want to use `metadata` if you are working with entries
-    /// returned by [`Lister`]. It's highly possible that metadata
-    /// you want has already been cached.
+    /// ## Services that support `create_dir`
+    ///
+    /// `test` and `test/` may vary in some services such as S3. However, on a local file system,
+    /// they're identical. Therefore, the behavior of `stat("test")` and `stat("test/")` might differ
+    /// in certain edge cases. Always use `stat("test/")` when you need to access a directory if possible.
+    ///
+    /// Here are the behavior list:
+    ///
+    /// | Case                   | Path            | Result                                     |
+    /// |------------------------|-----------------|--------------------------------------------|
+    /// | stat existing dir      | `abc/`          | Metadata with dir mode                     |
+    /// | stat existing file     | `abc/def_file`  | Metadata with file mode                    |
+    /// | stat dir without `/`   | `abc/def_dir`   | Error `NotFound` or metadata with dir mode |
+    /// | stat file with `/`     | `abc/def_file/` | Error `NotFound`                           |
+    /// | stat not existing path | `xyz`           | Error `NotFound`                           |
+    ///
+    /// Refer to [RFC: List Prefix][crate::docs::rfcs::rfc_3243_list_prefix] for more details.
+    ///
+    /// ## Services that not support `create_dir`
+    ///
+    /// For services that not support `create_dir`, `stat("test/")` will return `NotFound` even
+    /// when `test/abc` exists since the service won't have the concept of dir. There is nothing
+    /// we can do about this.
     ///
     /// # Examples
+    ///
+    /// ## Get metadata while `ETag` matches
+    ///
+    /// `stat_with` will
+    ///
+    /// - return `Ok(metadata)` if `ETag` matches
+    /// - return `Err(error)` and `error.kind() == ErrorKind::ConditionNotMatch` if file exists but
+    ///   `ETag` mismatch
+    /// - return `Err(err)` if other errors occur, for example, `NotFound`.
     ///
     /// ```
     /// # use anyhow::Result;
     /// # use opendal::BlockingOperator;
     /// use opendal::ErrorKind;
     /// #
-    /// # #[tokio::main]
-    /// # async fn test(op: BlockingOperator) -> Result<()> {
+    /// # fn test(op: BlockingOperator) -> Result<()> {
     /// if let Err(e) = op.stat_with("test").if_match("<etag>").call() {
+    ///     if e.kind() == ErrorKind::ConditionNotMatch {
+    ///         println!("file exists, but etag mismatch")
+    ///     }
     ///     if e.kind() == ErrorKind::NotFound {
     ///         println!("file not exist")
     ///     }
@@ -339,22 +398,23 @@ impl BlockingOperator {
                     );
                 }
 
-                let (rp, mut s) = inner.blocking_read(&path, args)?;
-                let mut buffer = Vec::with_capacity(rp.into_metadata().content_length() as usize);
+                let range = args.range();
+                let (size_hint, range) = if let Some(size) = range.size() {
+                    (size, range)
+                } else {
+                    let size = inner
+                        .blocking_stat(&path, OpStat::default())?
+                        .into_metadata()
+                        .content_length();
+                    let range = range.complete(size);
+                    (range.size().unwrap(), range)
+                };
 
-                match s.read_to_end(&mut buffer) {
-                    Ok(n) => {
-                        buffer.truncate(n);
-                        Ok(buffer)
-                    }
-                    Err(err) => Err(
-                        Error::new(ErrorKind::Unexpected, "blocking read_with failed")
-                            .with_operation("BlockingOperator::read_with")
-                            .with_context("service", inner.info().scheme().into_static())
-                            .with_context("path", &path)
-                            .set_source(err),
-                    ),
-                }
+                let (_, mut s) = inner.blocking_read(&path, args.with_range(range))?;
+                let mut buf = Vec::with_capacity(size_hint as usize);
+                s.read_to_end(&mut buf)?;
+
+                Ok(buf)
             },
         ))
     }
@@ -808,7 +868,7 @@ impl BlockingOperator {
             return self.delete(path);
         }
 
-        let obs = self.lister_with(path).delimiter("").call()?;
+        let obs = self.lister_with(path).recursive(true).call()?;
 
         for v in obs {
             match v {
@@ -826,17 +886,17 @@ impl BlockingOperator {
         Ok(())
     }
 
-    /// List entries within a given directory.
+    /// List entries that starts with given `path` in parent dir.
     ///
     /// # Notes
     ///
-    /// ## Listing recursively
+    /// ## Recursively List
     ///
     /// This function only read the children of the given directory. To read
-    /// all entries recursively, use `BlockingOperator::list_with("path").delimiter("")`
+    /// all entries recursively, use `BlockingOperator::list_with("path").recursive(true)`
     /// instead.
     ///
-    /// ## Streaming
+    /// ## Streaming List
     ///
     /// This function will read all entries in the given directory. It could
     /// take very long time and consume a lot of memory if the directory
@@ -845,7 +905,7 @@ impl BlockingOperator {
     /// In order to avoid this, you can use [`BlockingOperator::lister`] to list entries in
     /// a streaming way.
     ///
-    /// ## Metadata
+    /// ## Reuse Metadata
     ///
     /// The only metadata that is guaranteed to be available is the `Mode`.
     /// For fetching more metadata, please use [`BlockingOperator::list_with`] and `metakey`.
@@ -877,20 +937,20 @@ impl BlockingOperator {
         self.list_with(path).call()
     }
 
-    /// List entries within a given directory with options.
+    /// List entries that starts with given `path` in parent dir. with options.
     ///
     /// # Notes
     ///
-    /// ## For streaming
+    /// ## Streaming List
     ///
     /// This function will read all entries in the given directory. It could
     /// take very long time and consume a lot of memory if the directory
     /// contains a lot of entries.
     ///
-    /// In order to avoid this, you can use [`Operator::lister`] to list entries in
+    /// In order to avoid this, you can use [`BlockingOperator::lister`] to list entries in
     /// a streaming way.
     ///
-    /// ## Metadata
+    /// ## Reuse Metadata
     ///
     /// The only metadata that is guaranteed to be available is the `Mode`.
     /// For fetching more metadata, please specify the `metakey`.
@@ -907,7 +967,7 @@ impl BlockingOperator {
     /// use opendal::EntryMode;
     /// use opendal::Metakey;
     /// # fn test(op: BlockingOperator) -> Result<()> {
-    /// let mut entries = op.list_with("prefix/").delimiter("").call()?;
+    /// let mut entries = op.list_with("prefix/").recursive(true).call()?;
     /// for entry in entries {
     ///     match entry.metadata().mode() {
     ///         EntryMode::FILE => {
@@ -962,16 +1022,6 @@ impl BlockingOperator {
             path,
             OpList::default(),
             |inner, path, args| {
-                if !validate_path(&path, EntryMode::DIR) {
-                    return Err(Error::new(
-                        ErrorKind::NotADirectory,
-                        "the path trying to list should end with `/`",
-                    )
-                    .with_operation("BlockingOperator::list")
-                    .with_context("service", inner.info().scheme().into_static())
-                    .with_context("path", &path));
-                }
-
                 let lister = BlockingLister::create(inner, &path, args)?;
 
                 lister.collect()
@@ -979,15 +1029,14 @@ impl BlockingOperator {
         ))
     }
 
-    /// List entries within a given directory as an iterator.
+    /// List entries that starts with given `path` in parent dir.
     ///
-    /// This function will create a new handle to list entries.
-    ///
-    /// An error will be returned if given path doesn't end with `/`.
+    /// This function will create a new [`BlockingLister`] to list entries. Users can stop listing
+    /// via dropping this [`Lister`].
     ///
     /// # Notes
     ///
-    /// ## Listing recursively
+    /// ## Recursively List
     ///
     /// This function only read the children of the given directory. To read
     /// all entries recursively, use [`BlockingOperator::lister_with`] and `delimiter("")`
@@ -1077,7 +1126,7 @@ impl BlockingOperator {
     /// use opendal::EntryMode;
     /// use opendal::Metakey;
     /// # fn test(op: BlockingOperator) -> Result<()> {
-    /// let mut ds = op.lister_with("path/to/dir/").delimiter("").call()?;
+    /// let mut ds = op.lister_with("path/to/dir/").recursive(true).call()?;
     /// for entry in ds {
     ///     let entry = entry?;
     ///     match entry.metadata().mode() {
@@ -1135,19 +1184,13 @@ impl BlockingOperator {
             self.inner().clone(),
             path,
             OpList::default(),
-            |inner, path, args| {
-                if !validate_path(&path, EntryMode::DIR) {
-                    return Err(Error::new(
-                        ErrorKind::NotADirectory,
-                        "the path trying to list should end with `/`",
-                    )
-                    .with_operation("BlockingOperator::list")
-                    .with_context("service", inner.info().scheme().into_static())
-                    .with_context("path", &path));
-                }
-
-                BlockingLister::create(inner, &path, args)
-            },
+            |inner, path, args| BlockingLister::create(inner, &path, args),
         ))
+    }
+}
+
+impl From<BlockingOperator> for Operator {
+    fn from(v: BlockingOperator) -> Self {
+        Operator::from_inner(v.accessor).with_limit(v.limit)
     }
 }

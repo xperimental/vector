@@ -20,6 +20,7 @@ use std::env;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use http::header;
 use http::header::ACCEPT;
 use http::header::AUTHORIZATION;
 use http::header::CONTENT_LENGTH;
@@ -81,96 +82,11 @@ fn value_or_env(
 }
 
 /// GitHub Action Cache Services support.
-///
-/// # Capabilities
-///
-/// This service can be used to:
-///
-/// - [x] stat
-/// - [x] read
-/// - [x] write
-/// - [x] create_dir
-/// - [x] delete
-/// - [x] copy
-/// - [ ] rename
-/// - [ ] list
-/// - [ ] scan
-/// - [ ] presign
-/// - [ ] blocking
-/// # Notes
-///
-/// This service is mainly provided by github actions.
-///
-/// Refer to [Caching dependencies to speed up workflows](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows) for more information.
-///
-/// To make this service work as expected, please make sure to either call `endpoint` and `token` to
-/// configure the URL and credentials, or that the following environment has been setup correctly:
-///
-/// - `ACTIONS_CACHE_URL`
-/// - `ACTIONS_RUNTIME_TOKEN`
-///
-/// They can be exposed by following action:
-///
-/// ```yaml
-/// - name: Configure Cache Env
-///   uses: actions/github-script@v6
-///   with:
-///     script: |
-///       core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-///       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-/// ```
-///
-/// To make `delete` work as expected, `GITHUB_TOKEN` should also be set via:
-///
-/// ```yaml
-/// env:
-///   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-/// ```
-///
-/// # Limitations
-///
-/// Unlike other services, ghac doesn't support create empty files.
-/// We provide a `enable_create_simulation()` to support this operation but may result unexpected side effects.
-///
-/// Also, `ghac` is a cache service which means the data store inside could
-/// be automatically evicted at any time.
-///
-/// # Configuration
-///
-/// - `root`: Set the work dir for backend.
-///
-/// Refer to [`GhacBuilder`]'s public API docs for more information.
-///
-/// # Example
-///
-/// ## Via Builder
-///
-/// ```no_run
-/// use std::sync::Arc;
-///
-/// use anyhow::Result;
-/// use opendal::services::Ghac;
-/// use opendal::Operator;
-///
-/// #[tokio::main]
-/// async fn main() -> Result<()> {
-///     // Create ghac backend builder.
-///     let mut builder = Ghac::default();
-///     // Set the root for ghac, all operations will happen under this root.
-///     //
-///     // NOTE: the root must be absolute path.
-///     builder.root("/path/to/dir");
-///
-///     let op: Operator = Operator::new(builder)?.finish();
-///
-///     Ok(())
-/// }
-/// ```
+#[doc = include_str!("docs.md")]
 #[derive(Debug, Default)]
 pub struct GhacBuilder {
     root: Option<String>,
     version: Option<String>,
-    enable_create_simulation: bool,
     endpoint: Option<String>,
     runtime_token: Option<String>,
 
@@ -198,18 +114,6 @@ impl GhacBuilder {
             self.version = Some(version.to_string())
         }
 
-        self
-    }
-
-    /// Enable create simulation for ghac service.
-    ///
-    /// ghac service doesn't support create empty files. By enabling
-    /// create simulation, we will create a 1 byte file to represent
-    /// empty file.
-    ///
-    /// As a side effect, we can't create file with only 1 byte anymore.
-    pub fn enable_create_simulation(&mut self) -> &mut Self {
-        self.enable_create_simulation = true;
         self
     }
 
@@ -259,9 +163,6 @@ impl Builder for GhacBuilder {
 
         map.get("root").map(|v| builder.root(v));
         map.get("version").map(|v| builder.version(v));
-        map.get("enable_create_simulation")
-            .filter(|v| *v == "on" || *v == "true")
-            .map(|_| builder.enable_create_simulation());
 
         builder
     }
@@ -283,7 +184,6 @@ impl Builder for GhacBuilder {
 
         let backend = GhacBackend {
             root,
-            enable_create_simulation: self.enable_create_simulation,
 
             cache_url: value_or_env(self.endpoint.take(), ACTIONS_CACHE_URL, "Builder::build")?,
             catch_token: value_or_env(
@@ -313,7 +213,6 @@ impl Builder for GhacBuilder {
 pub struct GhacBackend {
     // root should end with "/"
     root: String,
-    enable_create_simulation: bool,
 
     cache_url: String,
     catch_token: String,
@@ -329,11 +228,11 @@ pub struct GhacBackend {
 #[async_trait]
 impl Accessor for GhacBackend {
     type Reader = IncomingAsyncBody;
-    type BlockingReader = ();
     type Writer = GhacWriter;
+    type Lister = ();
+    type BlockingReader = ();
     type BlockingWriter = ();
-    type Pager = ();
-    type BlockingPager = ();
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -349,7 +248,6 @@ impl Accessor for GhacBackend {
 
                 write: true,
                 write_can_multi: true,
-                create_dir: true,
                 delete: true,
 
                 ..Default::default()
@@ -357,61 +255,47 @@ impl Accessor for GhacBackend {
         am
     }
 
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
-        // ignore creation of dir.
-        if path.ends_with('/') {
-            return Ok(RpCreateDir::default());
-        }
-        if !self.enable_create_simulation {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                "ghac service doesn't support create empty file",
-            ));
-        }
-
-        let req = self.ghac_reserve(path).await?;
+    /// Some self-hosted GHES instances are backed by AWS S3 services which only returns
+    /// signed url with `GET` method. So we will use `GET` with empty range to simulate
+    /// `HEAD` instead.
+    ///
+    /// In this way, we can support both self-hosted GHES and `github.com`.
+    async fn stat(&self, path: &str, _: OpStat) -> Result<RpStat> {
+        let req = self.ghac_query(path).await?;
 
         let resp = self.client.send(req).await?;
 
-        let cache_id = if resp.status().is_success() {
+        let location = if resp.status() == StatusCode::OK {
             let slc = resp.into_body().bytes().await?;
-            let reserve_resp: GhacReserveResponse =
+            let query_resp: GhacQueryResponse =
                 serde_json::from_slice(&slc).map_err(new_json_deserialize_error)?;
-            reserve_resp.cache_id
-        } else if resp.status().as_u16() == StatusCode::CONFLICT {
-            // If the file is already exist, just return Ok.
-            return Ok(RpCreateDir::default());
+            query_resp.archive_location
         } else {
-            return Err(parse_error(resp)
-                .await
-                .map(|err| err.with_operation("Backend::ghac_reserve"))?);
+            return Err(parse_error(resp).await?);
         };
 
-        // Write only 1 byte to allow create.
-        let req = self
-            .ghac_upload(cache_id, 0, 1, AsyncBody::Bytes(Bytes::from_static(&[0])))
-            .await?;
-
+        let req = Request::get(location)
+            .header(header::RANGE, "bytes=0-0")
+            .body(AsyncBody::Empty)
+            .map_err(new_request_build_error)?;
         let resp = self.client.send(req).await?;
 
-        if resp.status().is_success() {
-            resp.into_body().consume().await?;
-        } else {
-            return Err(parse_error(resp)
-                .await
-                .map(|err| err.with_operation("Backend::ghac_upload"))?);
-        }
+        let status = resp.status();
+        match status {
+            StatusCode::OK | StatusCode::PARTIAL_CONTENT | StatusCode::RANGE_NOT_SATISFIABLE => {
+                let mut meta = parse_into_metadata(path, resp.headers())?;
+                // Correct content length via returning content range.
+                meta.set_content_length(
+                    meta.content_range()
+                        .expect("content range must be valid")
+                        .size()
+                        .expect("content range must contains size"),
+                );
 
-        let req = self.ghac_commit(cache_id, 1).await?;
-        let resp = self.client.send(req).await?;
-
-        if resp.status().is_success() {
-            resp.into_body().consume().await?;
-            Ok(RpCreateDir::default())
-        } else {
-            Err(parse_error(resp)
-                .await
-                .map(|err| err.with_operation("Backend::ghac_commit"))?)
+                resp.into_body().consume().await?;
+                Ok(RpStat::new(meta))
+            }
+            _ => Err(parse_error(resp).await?),
         }
     }
 
@@ -435,8 +319,16 @@ impl Accessor for GhacBackend {
         let status = resp.status();
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
-                let meta = parse_into_metadata(path, resp.headers())?;
-                Ok((RpRead::with_metadata(meta), resp.into_body()))
+                let size = parse_content_length(resp.headers())?;
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
+            }
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
             }
             _ => Err(parse_error(resp).await?),
         }
@@ -459,46 +351,6 @@ impl Accessor for GhacBackend {
         };
 
         Ok((RpWrite::default(), GhacWriter::new(self.clone(), cache_id)))
-    }
-
-    async fn stat(&self, path: &str, _: OpStat) -> Result<RpStat> {
-        // Stat root always returns a DIR.
-        if path == "/" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
-        let req = self.ghac_query(path).await?;
-
-        let resp = self.client.send(req).await?;
-
-        let location = if resp.status() == StatusCode::OK {
-            let slc = resp.into_body().bytes().await?;
-            let query_resp: GhacQueryResponse =
-                serde_json::from_slice(&slc).map_err(new_json_deserialize_error)?;
-            query_resp.archive_location
-        } else if resp.status() == StatusCode::NO_CONTENT && path.ends_with('/') {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        } else {
-            return Err(parse_error(resp).await?);
-        };
-
-        let req = self.ghac_head_location(&location).await?;
-        let resp = self.client.send(req).await?;
-
-        let status = resp.status();
-        match status {
-            StatusCode::OK => {
-                let mut meta = parse_into_metadata(path, resp.headers())?;
-
-                // Hack for enable_create_simulation.
-                if self.enable_create_simulation && meta.content_length_raw() == Some(1) {
-                    meta.set_content_length(0);
-                }
-
-                Ok(RpStat::new(meta))
-            }
-            _ => Err(parse_error(resp).await?),
-        }
     }
 
     async fn delete(&self, path: &str, _: OpDelete) -> Result<RpDelete> {
@@ -565,12 +417,6 @@ impl GhacBackend {
         }
 
         req.body(AsyncBody::Empty).map_err(new_request_build_error)
-    }
-
-    async fn ghac_head_location(&self, location: &str) -> Result<Request<AsyncBody>> {
-        Request::head(location)
-            .body(AsyncBody::Empty)
-            .map_err(new_request_build_error)
     }
 
     async fn ghac_reserve(&self, path: &str) -> Result<Request<AsyncBody>> {

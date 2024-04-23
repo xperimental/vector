@@ -22,9 +22,6 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use async_trait::async_trait;
-use pin_project::pin_project;
-
 use crate::raw::*;
 use crate::*;
 
@@ -34,10 +31,11 @@ use crate::*;
 pub enum WriteOperation {
     /// Operation for [`Write::write`]
     Write,
-    /// Operation for [`Write::abort`]
-    Abort,
     /// Operation for [`Write::close`]
     Close,
+    /// Operation for [`Write::abort`]
+    Abort,
+
     /// Operation for [`BlockingWrite::write`]
     BlockingWrite,
     /// Operation for [`BlockingWrite::close`]
@@ -63,8 +61,9 @@ impl From<WriteOperation> for &'static str {
 
         match v {
             Write => "Writer::write",
-            Abort => "Writer::abort",
             Close => "Writer::close",
+            Abort => "Writer::abort",
+
             BlockingWrite => "BlockingWriter::write",
             BlockingClose => "BlockingWriter::close",
         }
@@ -75,7 +74,6 @@ impl From<WriteOperation> for &'static str {
 pub type Writer = Box<dyn Write>;
 
 /// Write is the trait that OpenDAL returns to callers.
-#[async_trait]
 pub trait Write: Unpin + Send + Sync {
     /// Write given bytes into writer.
     ///
@@ -95,7 +93,6 @@ pub trait Write: Unpin + Send + Sync {
     fn poll_abort(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>>;
 }
 
-#[async_trait]
 impl Write for () {
     fn poll_write(&mut self, _: &mut Context<'_>, _: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         unimplemented!("write is required to be implemented for oio::Write")
@@ -119,7 +116,6 @@ impl Write for () {
 /// `Box<dyn Write>` won't implement `Write` automatically.
 ///
 /// To make Writer work as expected, we must add this impl.
-#[async_trait]
 impl<T: Write + ?Sized> Write for Box<T> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         (**self).poll_write(cx, bs)
@@ -155,8 +151,6 @@ pub trait WriteExt: Write {
     }
 }
 
-/// Make this future `!Unpin` for compatibility with async trait methods.
-#[pin_project(!Unpin)]
 pub struct WriteFuture<'a, W: Write + Unpin + ?Sized> {
     writer: &'a mut W,
     buf: &'a dyn oio::WriteBuf,
@@ -169,13 +163,11 @@ where
     type Output = Result<usize>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<usize>> {
-        let this = self.project();
-        Pin::new(this.writer).poll_write(cx, *this.buf)
+        let this = self.get_mut();
+        this.writer.poll_write(cx, this.buf)
     }
 }
 
-/// Make this future `!Unpin` for compatibility with async trait methods.
-#[pin_project(!Unpin)]
 pub struct AbortFuture<'a, W: Write + Unpin + ?Sized> {
     writer: &'a mut W,
 }
@@ -186,14 +178,11 @@ where
 {
     type Output = Result<()>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        let this = self.project();
-        Pin::new(this.writer).poll_abort(cx)
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        self.writer.poll_abort(cx)
     }
 }
 
-/// Make this future `!Unpin` for compatibility with async trait methods.
-#[pin_project(!Unpin)]
 pub struct CloseFuture<'a, W: Write + Unpin + ?Sized> {
     writer: &'a mut W,
 }
@@ -204,9 +193,8 @@ where
 {
     type Output = Result<()>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        let this = self.project();
-        Pin::new(this.writer).poll_close(cx)
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        self.writer.poll_close(cx)
     }
 }
 

@@ -1,3 +1,18 @@
+//! # [Ratatui] Docs.rs example
+//!
+//! The latest version of this example is available in the [examples] folder in the repository.
+//!
+//! Please note that the examples are designed to be run against the `main` branch of the Github
+//! repository. This means that you may not be able to compile with the latest release version on
+//! crates.io, or the one that you have installed locally.
+//!
+//! See the [examples readme] for more information on finding examples that match the version of the
+//! library you are using.
+//!
+//! [Ratatui]: https://github.com/ratatui-org/ratatui
+//! [examples]: https://github.com/ratatui-org/ratatui/blob/main/examples
+//! [examples readme]: https://github.com/ratatui-org/ratatui/blob/main/examples/README.md
+
 use std::io::{self, stdout};
 
 use crossterm::{
@@ -6,7 +21,7 @@ use crossterm::{
 };
 use ratatui::{prelude::*, widgets::*};
 
-/// Example code for libr.rs
+/// Example code for lib.rs
 ///
 /// When cargo-rdme supports doc comments that import from code, this will be imported
 /// rather than copied to the lib.rs file.
@@ -53,48 +68,36 @@ fn handle_events() -> io::Result<bool> {
 }
 
 fn layout(frame: &mut Frame) {
-    let main_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(frame.size());
+    let vertical = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ]);
+    let horizontal = Layout::horizontal([Constraint::Ratio(1, 2); 2]);
+    let [title_bar, main_area, status_bar] = vertical.areas(frame.size());
+    let [left, right] = horizontal.areas(main_area);
+
     frame.render_widget(
         Block::new().borders(Borders::TOP).title("Title Bar"),
-        main_layout[0],
+        title_bar,
     );
     frame.render_widget(
         Block::new().borders(Borders::TOP).title("Status Bar"),
-        main_layout[2],
+        status_bar,
     );
-
-    let inner_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(main_layout[1]);
-    frame.render_widget(
-        Block::default().borders(Borders::ALL).title("Left"),
-        inner_layout[0],
-    );
-    frame.render_widget(
-        Block::default().borders(Borders::ALL).title("Right"),
-        inner_layout[1],
-    );
+    frame.render_widget(Block::default().borders(Borders::ALL).title("Left"), left);
+    frame.render_widget(Block::default().borders(Borders::ALL).title("Right"), right);
 }
 
 fn styling(frame: &mut Frame) {
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(frame.size());
+    let areas = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(frame.size());
 
     let span1 = Span::raw("Hello ");
     let span2 = Span::styled(

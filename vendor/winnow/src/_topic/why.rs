@@ -36,18 +36,18 @@
 //!
 //! `winnow` includes support for:
 //! - Zero-copy parsing
-//! - [Parse traces][crate::trace] for easier debugging
+//! - [Parse traces] for easier debugging
 //! - [Streaming parsing][crate::Partial] for network communication or large file
 //! - [Stateful][crate::Stateful] parsers
 //!
 //! For binary formats, `winnow` includes:
-//! - [A hexadecimal view][crate::Bytes] in [traces][crate::trace]
-//! - [TLV](https://en.wikipedia.org/wiki/Type-length-value)
+//! - [A hexadecimal view][crate::Bytes] in [trace]
+//! - [TLV](https://en.wikipedia.org/wiki/Type-length-value) (e.g. [`length_take`])
 //! - Some common parsers to help get started, like numbers
 //!
 //! For text formats, `winnow` includes:
 //! - [Tracking of spans][crate::Located]
-//! - [A textual view when parsing as bytes][crate::BStr] in [traces][crate::trace]
+//! - [A textual view when parsing as bytes][crate::BStr] in [trace]
 //! - Ability to evaluate directly, parse to an AST, or lex and parse the format
 //!
 //! This works well for:
@@ -68,6 +68,8 @@
 //!   and to not block users on new features being merged while `winnow` aims to include all the
 //!   fundamentals for parsing to ensure the experience is cohesive and high quality.
 //!
+//! See also our [nom migration guide][super::nom]
+//!
 //! ## `chumsky`
 //!
 //! [`chumsky`](https://crates.io/crates/chumsky) is an up and coming parser-combinator library
@@ -77,7 +79,7 @@
 //!
 //! > "If you need to implement either `Parser` or `Strategy` by hand, that's a problem that needs fixing".
 //!
-//! This is under "batteries included" but it also ties into the feeling that `chumksy` acts more like
+//! This is under "batteries included" but it also ties into the feeling that `chumsky` acts more like
 //! a framework. Instead of composing together helpers, you are expected to do everything through
 //! their system to the point that it is non-trivial to implement their `Parser` trait and are
 //! encouraged to use the
@@ -95,4 +97,6 @@
 //! Instead, we work around this with things like the [`Accumulate`] trait.
 
 #![allow(unused_imports)]
+use crate::binary::length_take;
+use crate::combinator::trace;
 use crate::stream::Accumulate;

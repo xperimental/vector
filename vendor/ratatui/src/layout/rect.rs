@@ -4,8 +4,14 @@ use std::{
     fmt,
 };
 
+use super::{Position, Size};
 use crate::prelude::*;
 
+mod iter;
+pub use iter::*;
+
+/// A Rectangular area.
+///
 /// A simple rectangle used in the computation of the layout and to give widgets a hint about the
 /// area they are supposed to render to.
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash)]
@@ -19,6 +25,19 @@ pub struct Rect {
     pub width: u16,
     /// The height of the rect.
     pub height: u16,
+}
+
+/// Amounts by which to move a [`Rect`](super::Rect).
+///
+/// Positive numbers move to the right/bottom and negative to the left/top.
+///
+/// See [`Rect::offset`]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Offset {
+    /// How much to move on the X axis
+    pub x: i32,
+    /// How much to move on the Y axis
+    pub y: i32,
 }
 
 impl fmt::Display for Rect {
@@ -106,6 +125,26 @@ impl Rect {
         }
     }
 
+    /// Moves the `Rect` without modifying its size.
+    ///
+    /// Moves the `Rect` according to the given offset without modifying its [`width`](Rect::width)
+    /// or [`height`](Rect::height).
+    /// - Positive `x` moves the whole `Rect` to the right, negative to the left.
+    /// - Positive `y` moves the whole `Rect` to the bottom, negative to the top.
+    ///
+    /// See [`Offset`] for details.
+    pub fn offset(self, offset: Offset) -> Rect {
+        Rect {
+            x: i32::from(self.x)
+                .saturating_add(offset.x)
+                .clamp(0, (u16::MAX - self.width) as i32) as u16,
+            y: i32::from(self.y)
+                .saturating_add(offset.y)
+                .clamp(0, (u16::MAX - self.height) as i32) as u16,
+            ..self
+        }
+    }
+
     /// Returns a new rect that contains both the current one and the given one.
     pub fn union(self, other: Rect) -> Rect {
         let x1 = min(self.x, other.x);
@@ -131,8 +170,8 @@ impl Rect {
         Rect {
             x: x1,
             y: y1,
-            width: x2 - x1,
-            height: y2 - y1,
+            width: x2.saturating_sub(x1),
+            height: y2.saturating_sub(y1),
         }
     }
 
@@ -143,10 +182,147 @@ impl Rect {
             && self.y < other.bottom()
             && self.bottom() > other.y
     }
+
+    /// Returns true if the given position is inside the rect.
+    ///
+    /// The position is considered inside the rect if it is on the rect's border.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use ratatui::{prelude::*, layout::Position};
+    /// let rect = Rect::new(1, 2, 3, 4);
+    /// assert!(rect.contains(Position { x: 1, y: 2 }));
+    /// ````
+    pub const fn contains(self, position: Position) -> bool {
+        position.x >= self.x
+            && position.x < self.right()
+            && position.y >= self.y
+            && position.y < self.bottom()
+    }
+
+    /// Clamp this rect to fit inside the other rect.
+    ///
+    /// If the width or height of this rect is larger than the other rect, it will be clamped to the
+    /// other rect's width or height.
+    ///
+    /// If the left or top coordinate of this rect is smaller than the other rect, it will be
+    /// clamped to the other rect's left or top coordinate.
+    ///
+    /// If the right or bottom coordinate of this rect is larger than the other rect, it will be
+    /// clamped to the other rect's right or bottom coordinate.
+    ///
+    /// This is different from [`Rect::intersection`] because it will move this rect to fit inside
+    /// the other rect, while [`Rect::intersection`] instead would keep this rect's position and
+    /// truncate its size to only that which is inside the other rect.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use ratatui::prelude::*;
+    /// # fn render(frame: &mut Frame) {
+    /// let area = frame.size();
+    /// let rect = Rect::new(0, 0, 100, 100).clamp(area);
+    /// # }
+    /// ```
+    pub fn clamp(self, other: Rect) -> Rect {
+        let width = self.width.min(other.width);
+        let height = self.height.min(other.height);
+        let x = self.x.clamp(other.x, other.right().saturating_sub(width));
+        let y = self.y.clamp(other.y, other.bottom().saturating_sub(height));
+        Rect::new(x, y, width, height)
+    }
+
+    /// An iterator over rows within the `Rect`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ratatui::prelude::*;
+    /// fn render(area: Rect, buf: &mut Buffer) {
+    ///     for row in area.rows() {
+    ///         Line::raw("Hello, world!").render(row, buf);
+    ///     }
+    /// }
+    /// ```
+    pub fn rows(self) -> Rows {
+        Rows::new(self)
+    }
+
+    /// An iterator over columns within the `Rect`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ratatui::{prelude::*, widgets::*};
+    /// fn render(area: Rect, buf: &mut Buffer) {
+    ///     if let Some(left) = area.columns().next() {
+    ///         Block::new().borders(Borders::LEFT).render(left, buf);
+    ///     }
+    /// }
+    /// ```
+    pub fn columns(self) -> Columns {
+        Columns::new(self)
+    }
+
+    /// An iterator over the positions within the `Rect`.
+    ///
+    /// The positions are returned in a row-major order (left-to-right, top-to-bottom).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ratatui::prelude::*;
+    /// fn render(area: Rect, buf: &mut Buffer) {
+    ///     for position in area.positions() {
+    ///         buf.get_mut(position.x, position.y).set_symbol("x");
+    ///     }
+    /// }
+    /// ```
+    pub fn positions(self) -> Positions {
+        Positions::new(self)
+    }
+
+    /// Returns a [`Position`] with the same coordinates as this rect.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ratatui::prelude::*;
+    /// let rect = Rect::new(1, 2, 3, 4);
+    /// let position = rect.as_position();
+    /// ````
+    pub fn as_position(self) -> Position {
+        Position {
+            x: self.x,
+            y: self.y,
+        }
+    }
+
+    /// Converts the rect into a size struct.
+    pub fn as_size(self) -> Size {
+        Size {
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
+impl From<(Position, Size)> for Rect {
+    fn from((position, size): (Position, Size)) -> Self {
+        Rect {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
@@ -208,6 +384,39 @@ mod tests {
     }
 
     #[test]
+    fn offset() {
+        assert_eq!(
+            Rect::new(1, 2, 3, 4).offset(Offset { x: 5, y: 6 }),
+            Rect::new(6, 8, 3, 4),
+        );
+    }
+
+    #[test]
+    fn negative_offset() {
+        assert_eq!(
+            Rect::new(4, 3, 3, 4).offset(Offset { x: -2, y: -1 }),
+            Rect::new(2, 2, 3, 4),
+        );
+    }
+
+    #[test]
+    fn negative_offset_saturate() {
+        assert_eq!(
+            Rect::new(1, 2, 3, 4).offset(Offset { x: -5, y: -6 }),
+            Rect::new(0, 0, 3, 4),
+        );
+    }
+
+    /// Offsets a [`Rect`] making it go outside [`u16::MAX`], it should keep its size.
+    #[test]
+    fn offset_saturate_max() {
+        assert_eq!(
+            Rect::new(u16::MAX - 500, u16::MAX - 500, 100, 100).offset(Offset { x: 1000, y: 1000 }),
+            Rect::new(u16::MAX - 100, u16::MAX - 100, 100, 100),
+        );
+    }
+
+    #[test]
     fn union() {
         assert_eq!(
             Rect::new(1, 2, 3, 4).union(Rect::new(2, 3, 4, 5)),
@@ -224,9 +433,37 @@ mod tests {
     }
 
     #[test]
+    fn intersection_underflow() {
+        assert_eq!(
+            Rect::new(1, 1, 2, 2).intersection(Rect::new(4, 4, 2, 2)),
+            Rect::new(4, 4, 0, 0)
+        );
+    }
+
+    #[test]
     fn intersects() {
         assert!(Rect::new(1, 2, 3, 4).intersects(Rect::new(2, 3, 4, 5)));
         assert!(!Rect::new(1, 2, 3, 4).intersects(Rect::new(5, 6, 7, 8)));
+    }
+
+    // the bounds of this rect are x: [1..=3], y: [2..=5]
+    #[rstest]
+    #[case::inside_top_left(Rect::new(1, 2, 3, 4), Position { x: 1, y: 2 }, true)]
+    #[case::inside_top_right(Rect::new(1, 2, 3, 4), Position { x: 3, y: 2 }, true)]
+    #[case::inside_bottom_left(Rect::new(1, 2, 3, 4), Position { x: 1, y: 5 }, true)]
+    #[case::inside_bottom_right(Rect::new(1, 2, 3, 4), Position { x: 3, y: 5 }, true)]
+    #[case::outside_left(Rect::new(1, 2, 3, 4), Position { x: 0, y: 2 }, false)]
+    #[case::outside_right(Rect::new(1, 2, 3, 4), Position { x: 4, y: 2 }, false)]
+    #[case::outside_top(Rect::new(1, 2, 3, 4), Position { x: 1, y: 1 }, false)]
+    #[case::outside_bottom(Rect::new(1, 2, 3, 4), Position { x: 1, y: 6 }, false)]
+    #[case::outside_top_left(Rect::new(1, 2, 3, 4), Position { x: 0, y: 1 }, false)]
+    #[case::outside_bottom_right(Rect::new(1, 2, 3, 4), Position { x: 4, y: 6 }, false)]
+    fn contains(#[case] rect: Rect, #[case] position: Position, #[case] expected: bool) {
+        assert_eq!(
+            rect.contains(position),
+            expected,
+            "rect: {rect:?}, position: {position:?}",
+        );
     }
 
     #[test]
@@ -287,5 +524,99 @@ mod tests {
         const _TOP: u16 = RECT.top();
         const _BOTTOM: u16 = RECT.bottom();
         assert!(RECT.intersects(RECT));
+    }
+
+    #[test]
+    fn split() {
+        let [a, b] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(Rect::new(0, 0, 2, 1));
+        assert_eq!(a, Rect::new(0, 0, 1, 1));
+        assert_eq!(b, Rect::new(1, 0, 1, 1));
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid number of rects")]
+    fn split_invalid_number_of_recs() {
+        let layout = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]);
+        let [_a, _b, _c] = layout.areas(Rect::new(0, 0, 2, 1));
+    }
+
+    #[rstest]
+    #[case::inside(Rect::new(20, 20, 10, 10), Rect::new(20, 20, 10, 10))]
+    #[case::up_left(Rect::new(5, 5, 10, 10), Rect::new(10, 10, 10, 10))]
+    #[case::up(Rect::new(20, 5, 10, 10), Rect::new(20, 10, 10, 10))]
+    #[case::up_right(Rect::new(105, 5, 10, 10), Rect::new(100, 10, 10, 10))]
+    #[case::left(Rect::new(5, 20, 10, 10), Rect::new(10, 20, 10, 10))]
+    #[case::right(Rect::new(105, 20, 10, 10), Rect::new(100, 20, 10, 10))]
+    #[case::down_left(Rect::new(5, 105, 10, 10), Rect::new(10, 100, 10, 10))]
+    #[case::down(Rect::new(20, 105, 10, 10), Rect::new(20, 100, 10, 10))]
+    #[case::down_right(Rect::new(105, 105, 10, 10), Rect::new(100, 100, 10, 10))]
+    #[case::too_wide(Rect::new(5, 20, 200, 10), Rect::new(10, 20, 100, 10))]
+    #[case::too_tall(Rect::new(20, 5, 10, 200), Rect::new(20, 10, 10, 100))]
+    #[case::too_large(Rect::new(0, 0, 200, 200), Rect::new(10, 10, 100, 100))]
+    fn clamp(#[case] rect: Rect, #[case] expected: Rect) {
+        let other = Rect::new(10, 10, 100, 100);
+        assert_eq!(rect.clamp(other), expected);
+    }
+
+    #[test]
+    fn rows() {
+        let area = Rect::new(0, 0, 3, 2);
+        let rows: Vec<Rect> = area.rows().collect();
+
+        let expected_rows: Vec<Rect> = vec![Rect::new(0, 0, 3, 1), Rect::new(0, 1, 3, 1)];
+
+        assert_eq!(rows, expected_rows);
+    }
+
+    #[test]
+    fn columns() {
+        let area = Rect::new(0, 0, 3, 2);
+        let columns: Vec<Rect> = area.columns().collect();
+
+        let expected_columns: Vec<Rect> = vec![
+            Rect::new(0, 0, 1, 2),
+            Rect::new(1, 0, 1, 2),
+            Rect::new(2, 0, 1, 2),
+        ];
+
+        assert_eq!(columns, expected_columns);
+    }
+
+    #[test]
+    fn as_position() {
+        let rect = Rect::new(1, 2, 3, 4);
+        let position = rect.as_position();
+        assert_eq!(position.x, 1);
+        assert_eq!(position.y, 2);
+    }
+
+    #[test]
+    fn as_size() {
+        assert_eq!(
+            Rect::new(1, 2, 3, 4).as_size(),
+            Size {
+                width: 3,
+                height: 4
+            }
+        );
+    }
+
+    #[test]
+    fn from_position_and_size() {
+        let position = Position { x: 1, y: 2 };
+        let size = Size {
+            width: 3,
+            height: 4,
+        };
+        assert_eq!(
+            Rect::from((position, size)),
+            Rect {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4
+            }
+        );
     }
 }

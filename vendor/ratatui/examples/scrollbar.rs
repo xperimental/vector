@@ -1,3 +1,18 @@
+//! # [Ratatui] Scrollbar example
+//!
+//! The latest version of this example is available in the [examples] folder in the repository.
+//!
+//! Please note that the examples are designed to be run against the `main` branch of the Github
+//! repository. This means that you may not be able to compile with the latest release version on
+//! crates.io, or the one that you have installed locally.
+//!
+//! See the [examples readme] for more information on finding examples that match the version of the
+//! library you are using.
+//!
+//! [Ratatui]: https://github.com/ratatui-org/ratatui
+//! [examples]: https://github.com/ratatui-org/ratatui/blob/main/examples
+//! [examples readme]: https://github.com/ratatui-org/ratatui/blob/main/examples/README.md
+
 use std::{
     error::Error,
     io,
@@ -62,22 +77,22 @@ fn run_app<B: Backend>(
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('j') => {
+                    KeyCode::Char('j') | KeyCode::Down => {
                         app.vertical_scroll = app.vertical_scroll.saturating_add(1);
                         app.vertical_scroll_state =
                             app.vertical_scroll_state.position(app.vertical_scroll);
                     }
-                    KeyCode::Char('k') => {
+                    KeyCode::Char('k') | KeyCode::Up => {
                         app.vertical_scroll = app.vertical_scroll.saturating_sub(1);
                         app.vertical_scroll_state =
                             app.vertical_scroll_state.position(app.vertical_scroll);
                     }
-                    KeyCode::Char('h') => {
+                    KeyCode::Char('h') | KeyCode::Left => {
                         app.horizontal_scroll = app.horizontal_scroll.saturating_sub(1);
                         app.horizontal_scroll_state =
                             app.horizontal_scroll_state.position(app.horizontal_scroll);
                     }
-                    KeyCode::Char('l') => {
+                    KeyCode::Char('l') | KeyCode::Right => {
                         app.horizontal_scroll = app.horizontal_scroll.saturating_add(1);
                         app.horizontal_scroll_state =
                             app.horizontal_scroll_state.position(app.horizontal_scroll);
@@ -100,19 +115,14 @@ fn ui(f: &mut Frame, app: &mut App) {
     let mut long_line = s.repeat(usize::from(size.width) / s.len() + 4);
     long_line.push('\n');
 
-    let block = Block::default().black();
-    f.render_widget(block, size);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
-        .split(size);
+    let chunks = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+    ])
+    .split(size);
 
     let text = vec![
         Line::from("This is a line "),
@@ -145,18 +155,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     app.vertical_scroll_state = app.vertical_scroll_state.content_length(text.len());
     app.horizontal_scroll_state = app.horizontal_scroll_state.content_length(long_line.len());
 
-    let create_block = |title| {
-        Block::default()
-            .borders(Borders::ALL)
-            .gray()
-            .title(Span::styled(
-                title,
-                Style::default().add_modifier(Modifier::BOLD),
-            ))
-    };
+    let create_block = |title: &'static str| Block::bordered().gray().title(title.bold());
 
     let title = Block::default()
-        .title("Use h j k l to scroll ◄ ▲ ▼ ►")
+        .title("Use h j k l or ◄ ▲ ▼ ► to scroll ".bold())
         .title_alignment(Alignment::Center);
     f.render_widget(title, chunks[0]);
 

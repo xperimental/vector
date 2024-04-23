@@ -53,6 +53,8 @@ cfg_if::cfg_if! {
         mod decode_gzip;
         mod decode_mime_q;
         mod decode_percent;
+        mod decode_punycode;
+        mod decode_snappy;
         mod decode_zlib;
         mod decode_zstd;
         mod decrypt;
@@ -65,6 +67,9 @@ cfg_if::cfg_if! {
         mod encode_key_value;
         mod encode_logfmt;
         mod encode_percent;
+        mod encode_proto;
+        mod encode_punycode;
+        mod encode_snappy;
         mod encode_zlib;
         mod encode_zstd;
         mod encrypt;
@@ -83,6 +88,7 @@ cfg_if::cfg_if! {
         mod get;
         mod get_env_var;
         mod get_hostname;
+        mod get_timezone_name;
         mod hmac;
         mod includes;
         mod integer;
@@ -132,6 +138,7 @@ cfg_if::cfg_if! {
         mod parse_common_log;
         mod parse_csv;
         mod parse_duration;
+        mod parse_etld;
         mod parse_float;
         mod parse_glog;
         mod parse_grok;
@@ -143,6 +150,7 @@ cfg_if::cfg_if! {
         mod parse_linux_authorization;
         mod parse_logfmt;
         mod parse_nginx_log;
+        mod parse_proto;
         mod parse_query_string;
         mod parse_regex;
         mod parse_regex_all;
@@ -161,6 +169,7 @@ cfg_if::cfg_if! {
         mod redact;
         mod remove;
         mod replace;
+        mod replace_with;
         mod reverse_dns;
         mod round;
         mod seahash;
@@ -168,6 +177,7 @@ cfg_if::cfg_if! {
         mod sha1;
         mod sha2;
         mod sha3;
+        mod sieve;
         mod slice;
         mod split;
         mod starts_with;
@@ -195,6 +205,7 @@ cfg_if::cfg_if! {
         mod unnest;
         mod upcase;
         mod uuid_v4;
+        mod uuid_v7;
         mod values;
 
         // -----------------------------------------------------------------------------
@@ -215,6 +226,8 @@ cfg_if::cfg_if! {
         pub use decode_gzip::DecodeGzip;
         pub use decode_mime_q::DecodeMimeQ;
         pub use decode_percent::DecodePercent;
+        pub use decode_punycode::DecodePunycode;
+        pub use decode_snappy::DecodeSnappy;
         pub use decode_zlib::DecodeZlib;
         pub use decode_zstd::DecodeZstd;
         pub use decrypt::Decrypt;
@@ -227,6 +240,9 @@ cfg_if::cfg_if! {
         pub use encode_key_value::EncodeKeyValue;
         pub use encode_logfmt::EncodeLogfmt;
         pub use encode_percent::EncodePercent;
+        pub use encode_proto::EncodeProto;
+        pub use encode_punycode::EncodePunycode;
+        pub use encode_snappy::EncodeSnappy;
         pub use encode_zlib::EncodeZlib;
         pub use encode_zstd::EncodeZstd;
         pub use encrypt::Encrypt;
@@ -246,6 +262,8 @@ cfg_if::cfg_if! {
         pub use get::Get;
         pub use get_env_var::GetEnvVar;
         pub use get_hostname::GetHostname;
+        pub use get_timezone_name::GetTimezoneName;
+        pub use get_timezone_name::get_name_for_timezone;
         pub use includes::Includes;
         pub use integer::Integer;
         pub use ip_aton::IpAton;
@@ -292,6 +310,7 @@ cfg_if::cfg_if! {
         pub use parse_csv::ParseCsv;
         pub use parse_duration::ParseDuration;
         pub use parse_float::ParseFloat;
+        pub use parse_etld::ParseEtld;
         pub use parse_glog::ParseGlog;
         pub use parse_grok::ParseGrok;
         pub use parse_groks::ParseGroks;
@@ -302,6 +321,7 @@ cfg_if::cfg_if! {
         pub use parse_linux_authorization::ParseLinuxAuthorization;
         pub use parse_logfmt::ParseLogFmt;
         pub use parse_nginx_log::ParseNginxLog;
+        pub use parse_proto::ParseProto;
         pub use parse_query_string::ParseQueryString;
         pub use parse_regex::ParseRegex;
         pub use parse_regex_all::ParseRegexAll;
@@ -321,11 +341,13 @@ cfg_if::cfg_if! {
         pub use redact::Redact;
         pub use remove::Remove;
         pub use replace::Replace;
+        pub use replace_with::ReplaceWith;
         pub use reverse_dns::ReverseDns;
         pub use round::Round;
         pub use set::Set;
         pub use sha2::Sha2;
         pub use sha3::Sha3;
+        pub use sieve::Sieve;
         pub use slice::Slice;
         pub use split::Split;
         pub use starts_with::StartsWith;
@@ -352,6 +374,7 @@ cfg_if::cfg_if! {
         pub use unnest::Unnest;
         pub use upcase::Upcase;
         pub use uuid_v4::UuidV4;
+        pub use uuid_v7::UuidV7;
         pub use values::Values;
         pub use self::array::Array;
         pub use self::md5::Md5;
@@ -379,7 +402,9 @@ pub fn all() -> Vec<Box<dyn Function>> {
         Box::new(DecodeBase64),
         Box::new(DecodeGzip),
         Box::new(DecodePercent),
+        Box::new(DecodePunycode),
         Box::new(DecodeMimeQ),
+        Box::new(DecodeSnappy),
         Box::new(DecodeZlib),
         Box::new(DecodeZstd),
         Box::new(Decrypt),
@@ -392,6 +417,9 @@ pub fn all() -> Vec<Box<dyn Function>> {
         Box::new(EncodeKeyValue),
         Box::new(EncodeLogfmt),
         Box::new(EncodePercent),
+        Box::new(EncodeProto),
+        Box::new(EncodePunycode),
+        Box::new(EncodeSnappy),
         Box::new(EncodeZlib),
         Box::new(EncodeZstd),
         Box::new(Encrypt),
@@ -410,6 +438,7 @@ pub fn all() -> Vec<Box<dyn Function>> {
         Box::new(Get),
         Box::new(GetEnvVar),
         Box::new(GetHostname),
+        Box::new(GetTimezoneName),
         Box::new(Hmac),
         Box::new(Includes),
         Box::new(Integer),
@@ -459,6 +488,7 @@ pub fn all() -> Vec<Box<dyn Function>> {
         Box::new(ParseCsv),
         Box::new(ParseDuration),
         Box::new(ParseFloat),
+        Box::new(ParseEtld),
         Box::new(ParseGlog),
         Box::new(ParseGrok),
         Box::new(ParseGroks),
@@ -469,6 +499,7 @@ pub fn all() -> Vec<Box<dyn Function>> {
         Box::new(ParseLinuxAuthorization),
         Box::new(ParseLogFmt),
         Box::new(ParseNginxLog),
+        Box::new(ParseProto),
         Box::new(ParseQueryString),
         Box::new(ParseRegex),
         Box::new(ParseRegexAll),
@@ -487,6 +518,7 @@ pub fn all() -> Vec<Box<dyn Function>> {
         Box::new(Redact),
         Box::new(Remove),
         Box::new(Replace),
+        Box::new(ReplaceWith),
         Box::new(ReverseDns),
         Box::new(Round),
         Box::new(Seahash),
@@ -494,6 +526,7 @@ pub fn all() -> Vec<Box<dyn Function>> {
         Box::new(Sha1),
         Box::new(Sha2),
         Box::new(Sha3),
+        Box::new(Sieve),
         Box::new(Slice),
         Box::new(Split),
         Box::new(StartsWith),
@@ -521,6 +554,7 @@ pub fn all() -> Vec<Box<dyn Function>> {
         Box::new(Unnest),
         Box::new(Upcase),
         Box::new(UuidV4),
+        Box::new(UuidV7),
         Box::new(Values),
     ]
 }

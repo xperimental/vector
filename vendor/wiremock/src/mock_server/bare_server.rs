@@ -3,6 +3,7 @@ use crate::mock_set::MockId;
 use crate::mock_set::MountedMockSet;
 use crate::request::BodyPrintLimit;
 use crate::{mock::Mock, verification::VerificationOutcome, Request};
+use std::fmt::{Debug, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::pin::pin;
 use std::sync::atomic::AtomicBool;
@@ -50,7 +51,7 @@ impl MockServerState {
 
 impl BareMockServer {
     /// Start a new instance of a `BareMockServer` listening on the specified
-    /// [`TcpListener`](std::net::TcpListener).
+    /// [`TcpListener`].
     pub(super) async fn start(
         listener: TcpListener,
         request_recording: RequestRecording,
@@ -162,6 +163,12 @@ impl BareMockServer {
     pub(crate) async fn received_requests(&self) -> Option<Vec<Request>> {
         let state = self.state.read().await;
         state.received_requests.to_owned()
+    }
+}
+
+impl Debug for BareMockServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BareMockServer {{ address: {} }}", self.address())
     }
 }
 
@@ -285,20 +292,15 @@ impl Drop for MockGuard {
                     if received_requests.is_empty() {
                         "The server did not receive any request.".into()
                     } else {
-                        format!(
-                            "Received requests:\n{}",
-                            received_requests
-                                .iter()
-                                .enumerate()
-                                .map(|(index, request)| {
-                                    format!(
-                                        "- Request #{}\n{}",
-                                        index + 1,
-                                        &format!("\t{}", request)
-                                    )
-                                })
-                                .collect::<String>()
-                        )
+                        let requests = received_requests.iter().enumerate().fold(
+                            String::new(),
+                            |mut r, (index, request)| {
+                                write!(r, "- Request #{idx}\n\t{request}", idx = index + 1,)
+                                    .unwrap();
+                                r
+                            },
+                        );
+                        format!("Received requests:\n{requests}")
                     }
                 } else {
                     "Enable request recording on the mock server to get the list of incoming requests as part of the panic message.".into()

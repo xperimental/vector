@@ -8,6 +8,10 @@
 #![warn(missing_docs, rust_2018_idioms, unused_qualifications)]
 #![doc = include_str!("../README.md")]
 
+#[cfg(feature = "alloc")]
+#[macro_use]
+extern crate alloc;
+
 pub mod point_arithmetic;
 
 mod affine;
@@ -17,7 +21,9 @@ mod field;
 mod projective;
 
 pub use crate::{affine::AffinePoint, projective::ProjectivePoint};
-pub use elliptic_curve::{self, point::Double, Field, FieldBytes, PrimeCurve, PrimeField};
+pub use elliptic_curve::{
+    self, generic_array, point::Double, Field, FieldBytes, PrimeCurve, PrimeField,
+};
 
 use elliptic_curve::CurveArithmetic;
 
@@ -30,6 +36,7 @@ pub trait PrimeCurveParams:
     + CurveArithmetic<ProjectivePoint = ProjectivePoint<Self>>
 {
     /// Base field element type.
+    // TODO(tarcieri): add `Invert` bound
     type FieldElement: PrimeField<Repr = FieldBytes<Self>>;
 
     /// [Point arithmetic](point_arithmetic) implementation, might be optimized for this specific curve

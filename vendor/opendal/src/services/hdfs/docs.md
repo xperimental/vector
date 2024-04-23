@@ -10,7 +10,7 @@ This service can be used to:
 - [x] create_dir
 - [x] delete
 - [ ] copy
-- [ ] rename
+- [x] rename
 - [x] list
 - [ ] ~~scan~~
 - [ ] ~~presign~~
@@ -31,6 +31,7 @@ HDFS support needs to enable feature `services-hdfs`.
 - `name_node`: Set the name node for backend.
 - `kerberos_ticket_cache_path`: Set the kerberos ticket cache path for backend, this should be gotten by `klist` after `kinit`
 - `user`: Set the user for backend
+- `enable_append`: enable the append capacity. Default is false. 
 
 Refer to [`HdfsBuilder`]'s public API docs for more information.
 
@@ -85,6 +86,25 @@ export CLASSPATH=$HADOOP_CONF_DIR:$HADOOP_CLASSPATH:$CLASSPATH
 ```rust
 builder.name_node("hdfs://cluster_name");
 ```
+
+### macOS Specific Note
+
+If you encounter an issue during the build process on macOS with an error message similar to:
+
+```shell
+ld: unknown file type in $HADOOP_HOME/lib/native/libhdfs.so.0.0.0
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+```
+This error is likely due to the fact that the official Hadoop build includes the libhdfs.so file for the x86-64 architecture, which is not compatible with aarch64 architecture required for MacOS.
+
+To resolve this issue, you can add hdrs as a dependency in your Rust application's Cargo.toml file, and enable the vendored feature:
+
+```toml
+[dependencies]
+hdrs = { version = "<version_number>", features = ["vendored"] }
+```
+Enabling the vendored feature ensures that hdrs includes the necessary libhdfs.so library built for the correct architecture.
+
 ## Example
 
 ### Via Builder
@@ -101,11 +121,17 @@ async fn main() -> Result<()> {
     // Create fs backend builder.
     let mut builder = Hdfs::default();
     // Set the name node for hdfs.
+    // If the string starts with a protocol type such as file://, hdfs://, or gs://, this protocol type will be used.
     builder.name_node("hdfs://127.0.0.1:9000");
     // Set the root for hdfs, all operations will happen under this root.
     //
     // NOTE: the root must be absolute path.
     builder.root("/tmp");
+    
+    // Enable the append capacity for hdfs. 
+    // 
+    // Note: HDFS run in non-distributed mode doesn't support append.
+    builder.enable_append(true);
 
     // `Accessor` provides the low level APIs, we will use `Operator` normally.
     let op: Operator = Operator::new(builder)?.finish();
