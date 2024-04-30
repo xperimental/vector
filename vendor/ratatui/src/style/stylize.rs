@@ -13,8 +13,14 @@ use crate::{
 pub trait Styled {
     type Item;
 
+    /// Returns the style of the object.
     fn style(&self) -> Style;
-    fn set_style(self, style: Style) -> Self::Item;
+
+    /// Sets the style of the object.
+    ///
+    /// `style` accepts any type that is convertible to [`Style`] (e.g. [`Style`], [`Color`], or
+    /// your own type that implements [`Into<Style>`]).
+    fn set_style<S: Into<Style>>(self, style: S) -> Self::Item;
 }
 
 /// Generates two methods for each color, one for setting the foreground color (`red()`, `blue()`,
@@ -40,11 +46,13 @@ macro_rules! color {
     ( $color:ident ) => {
         paste! {
             #[doc = "Sets the foreground color to [`" $color "`](Color::" $color:camel ")."]
+            #[must_use = concat!("`", stringify!($color), "` returns the modified style without modifying the original")]
             fn $color(self) -> T {
                 self.fg(Color::[<$color:camel>])
             }
 
             #[doc = "Sets the background color to [`" $color "`](Color::" $color:camel ")."]
+            #[must_use = concat!("`on_", stringify!($color), "` returns the modified style without modifying the original")]
             fn [<on_ $color>](self) -> T {
                 self.bg(Color::[<$color:camel>])
             }
@@ -76,6 +84,7 @@ macro_rules! modifier {
     ( $modifier:ident ) => {
         paste! {
             #[doc = "Adds the [`" $modifier:upper "`](Modifier::" $modifier:upper ") modifier."]
+            #[must_use = concat!("`", stringify!($modifier), "` returns the modified style without modifying the original")]
             fn [<$modifier>](self) -> T {
                 self.add_modifier(Modifier::[<$modifier:upper>])
             }
@@ -83,6 +92,7 @@ macro_rules! modifier {
 
         paste! {
             #[doc = "Removes the [`" $modifier:upper "`](Modifier::" $modifier:upper ") modifier."]
+            #[must_use = concat!("`not_", stringify!($modifier), "` returns the modified style without modifying the original")]
             fn [<not_ $modifier>](self) -> T {
                 self.remove_modifier(Modifier::[<$modifier:upper>])
             }
@@ -123,13 +133,22 @@ macro_rules! modifier {
 ///     "world".green().on_yellow().not_bold(),
 /// ]);
 /// let paragraph = Paragraph::new(line).italic().underlined();
-/// let block = Block::default().title("Title").borders(Borders::ALL).on_white().bold();
+/// let block = Block::default()
+///     .title("Title")
+///     .borders(Borders::ALL)
+///     .on_white()
+///     .bold();
 /// ```
 pub trait Stylize<'a, T>: Sized {
+    #[must_use = "`bg` returns the modified style without modifying the original"]
     fn bg(self, color: Color) -> T;
+    #[must_use = "`fg` returns the modified style without modifying the original"]
     fn fg<S: Into<Color>>(self, color: S) -> T;
+    #[must_use = "`reset` returns the modified style without modifying the original"]
     fn reset(self) -> T;
+    #[must_use = "`add_modifier` returns the modified style without modifying the original"]
     fn add_modifier(self, modifier: Modifier) -> T;
+    #[must_use = "`remove_modifier` returns the modified style without modifying the original"]
     fn remove_modifier(self, modifier: Modifier) -> T;
 
     color!(black);
@@ -196,7 +215,7 @@ impl<'a> Styled for &'a str {
         Style::default()
     }
 
-    fn set_style(self, style: Style) -> Self::Item {
+    fn set_style<S: Into<Style>>(self, style: S) -> Self::Item {
         Span::styled(self, style)
     }
 }
@@ -208,7 +227,7 @@ impl Styled for String {
         Style::default()
     }
 
-    fn set_style(self, style: Style) -> Self::Item {
+    fn set_style<S: Into<Style>>(self, style: S) -> Self::Item {
         Span::styled(self, style)
     }
 }

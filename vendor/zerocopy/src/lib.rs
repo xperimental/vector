@@ -142,6 +142,12 @@
 //! See our [MSRV policy].
 //!
 //! [MSRV policy]: https://github.com/google/zerocopy/blob/main/POLICIES.md#msrv
+//!
+//! # Changelog
+//!
+//! Zerocopy uses [GitHub Releases].
+//!
+//! [GitHub Releases]: https://github.com/google/zerocopy/releases
 
 // Sometimes we want to use lints which were added after our MSRV.
 // `unknown_lints` is `warn` by default and we deny warnings in CI, so without
@@ -223,26 +229,47 @@
 ))]
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(feature = "simd-nightly", feature(stdsimd))]
+#![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![cfg_attr(
     __INTERNAL_USE_ONLY_NIGHLTY_FEATURES_IN_TESTS,
     feature(layout_for_ptr, strict_provenance)
 )]
+
+// This is a hack to allow zerocopy-derive derives to work in this crate. They
+// assume that zerocopy is linked as an extern crate, so they access items from
+// it as `zerocopy::Xxx`. This makes that still work.
+#[cfg(any(feature = "derive", test))]
+extern crate self as zerocopy;
+
 #[macro_use]
 mod macros;
 
 #[cfg(feature = "byteorder")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "byteorder")))]
 pub mod byteorder;
 #[doc(hidden)]
 pub mod macro_util;
+mod post_monomorphization_compile_fail_tests;
 mod util;
 // TODO(#252): If we make this pub, come up with a better name.
 mod wrappers;
 
 #[cfg(feature = "byteorder")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "byteorder")))]
 pub use crate::byteorder::*;
 pub use crate::wrappers::*;
+
 #[cfg(any(feature = "derive", test))]
-pub use zerocopy_derive::*;
+#[cfg_attr(doc_cfg, doc(cfg(feature = "derive")))]
+pub use zerocopy_derive::Unaligned;
+
+// `pub use` separately here so that we can mark it `#[doc(hidden)]`.
+//
+// TODO(#29): Remove this or add a doc comment.
+#[cfg(any(feature = "derive", test))]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "derive")))]
+#[doc(hidden)]
+pub use zerocopy_derive::KnownLayout;
 
 use core::{
     cell::{self, RefMut},
@@ -263,10 +290,14 @@ use core::{
 #[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(feature = "alloc")]
-use {
-    alloc::{boxed::Box, vec::Vec},
-    core::alloc::Layout,
-};
+use alloc::{boxed::Box, vec::Vec};
+
+#[cfg(any(feature = "alloc", kani))]
+use core::alloc::Layout;
+
+// Used by `TryFromBytes::is_bit_valid`.
+#[doc(hidden)]
+pub use crate::util::ptr::Ptr;
 
 // For each polyfill, as soon as the corresponding feature is stable, the
 // polyfill import will be unused because method/function resolution will prefer
@@ -277,14 +308,6 @@ use {
 #[allow(unused_imports)]
 use crate::util::polyfills::NonNullExt as _;
 
-// This is a hack to allow zerocopy-derive derives to work in this crate. They
-// assume that zerocopy is linked as an extern crate, so they access items from
-// it as `zerocopy::Xxx`. This makes that still work.
-#[cfg(any(feature = "derive", test))]
-mod zerocopy {
-    pub(crate) use crate::*;
-}
-
 #[rustversion::nightly]
 #[cfg(all(test, not(__INTERNAL_USE_ONLY_NIGHLTY_FEATURES_IN_TESTS)))]
 const _: () = {
@@ -293,6 +316,9 @@ const _: () = {
     #[warn(deprecated)]
     _WARNING
 };
+
+/// The target pointer width, counted in bits.
+const POINTER_WIDTH_BITS: usize = mem::size_of::<usize>() * 8;
 
 /// The layout of a type which might be dynamically-sized.
 ///
@@ -323,19 +349,19 @@ const _: () = {
 /// [the reference]: https://doc.rust-lang.org/reference/type-layout.html
 #[doc(hidden)]
 #[allow(missing_debug_implementations, missing_copy_implementations)]
-#[cfg_attr(test, derive(Copy, Clone, Debug, PartialEq, Eq))]
+#[cfg_attr(any(kani, test), derive(Copy, Clone, Debug, PartialEq, Eq))]
 pub struct DstLayout {
-    _align: NonZeroUsize,
-    _size_info: SizeInfo,
+    align: NonZeroUsize,
+    size_info: SizeInfo,
 }
 
-#[cfg_attr(test, derive(Copy, Clone, Debug, PartialEq, Eq))]
+#[cfg_attr(any(kani, test), derive(Copy, Clone, Debug, PartialEq, Eq))]
 enum SizeInfo<E = usize> {
     Sized { _size: usize },
     SliceDst(TrailingSliceLayout<E>),
 }
 
-#[cfg_attr(test, derive(Copy, Clone, Debug, PartialEq, Eq))]
+#[cfg_attr(any(kani, test), derive(Copy, Clone, Debug, PartialEq, Eq))]
 struct TrailingSliceLayout<E = usize> {
     // The offset of the first byte of the trailing slice field. Note that this
     // is NOT the same as the minimum size of the type. For example, consider
@@ -357,7 +383,8 @@ struct TrailingSliceLayout<E = usize> {
 impl SizeInfo {
     /// Attempts to create a `SizeInfo` from `Self` in which `elem_size` is a
     /// `NonZeroUsize`. If `elem_size` is 0, returns `None`.
-    const fn _try_to_nonzero_elem_size(&self) -> Option<SizeInfo<NonZeroUsize>> {
+    #[allow(unused)]
+    const fn try_to_nonzero_elem_size(&self) -> Option<SizeInfo<NonZeroUsize>> {
         Some(match *self {
             SizeInfo::Sized { _size } => SizeInfo::Sized { _size },
             SizeInfo::SliceDst(TrailingSliceLayout { _offset, _elem_size }) => {
@@ -381,6 +408,59 @@ pub enum _CastType {
 }
 
 impl DstLayout {
+    /// The minimum possible alignment of a type.
+    const MIN_ALIGN: NonZeroUsize = match NonZeroUsize::new(1) {
+        Some(min_align) => min_align,
+        None => unreachable!(),
+    };
+
+    /// The maximum theoretic possible alignment of a type.
+    ///
+    /// For compatibility with future Rust versions, this is defined as the
+    /// maximum power-of-two that fits into a `usize`. See also
+    /// [`DstLayout::CURRENT_MAX_ALIGN`].
+    const THEORETICAL_MAX_ALIGN: NonZeroUsize =
+        match NonZeroUsize::new(1 << (POINTER_WIDTH_BITS - 1)) {
+            Some(max_align) => max_align,
+            None => unreachable!(),
+        };
+
+    /// The current, documented max alignment of a type \[1\].
+    ///
+    /// \[1\] Per <https://doc.rust-lang.org/reference/type-layout.html#the-alignment-modifiers>:
+    ///
+    ///   The alignment value must be a power of two from 1 up to
+    ///   2<sup>29</sup>.
+    #[cfg(not(kani))]
+    const CURRENT_MAX_ALIGN: NonZeroUsize = match NonZeroUsize::new(1 << 28) {
+        Some(max_align) => max_align,
+        None => unreachable!(),
+    };
+
+    /// Constructs a `DstLayout` for a zero-sized type with `repr_align`
+    /// alignment (or 1). If `repr_align` is provided, then it must be a power
+    /// of two.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the supplied `repr_align` is not a power of two.
+    ///
+    /// # Safety
+    ///
+    /// Unsafe code may assume that the contract of this function is satisfied.
+    #[doc(hidden)]
+    #[inline]
+    pub const fn new_zst(repr_align: Option<NonZeroUsize>) -> DstLayout {
+        let align = match repr_align {
+            Some(align) => align,
+            None => Self::MIN_ALIGN,
+        };
+
+        assert!(align.is_power_of_two());
+
+        DstLayout { align, size_info: SizeInfo::Sized { _size: 0 } }
+    }
+
     /// Constructs a `DstLayout` which describes `T`.
     ///
     /// # Safety
@@ -393,11 +473,11 @@ impl DstLayout {
         // sound to initialize `size_info` to `SizeInfo::Sized { size }`; the
         // `size` field is also correct by construction.
         DstLayout {
-            _align: match NonZeroUsize::new(mem::align_of::<T>()) {
+            align: match NonZeroUsize::new(mem::align_of::<T>()) {
                 Some(align) => align,
                 None => unreachable!(),
             },
-            _size_info: SizeInfo::Sized { _size: mem::size_of::<T>() },
+            size_info: SizeInfo::Sized { _size: mem::size_of::<T>() },
         }
     }
 
@@ -416,15 +496,205 @@ impl DstLayout {
         // construction. Since `[T]` is a (degenerate case of a) slice DST, it
         // is correct to initialize `size_info` to `SizeInfo::SliceDst`.
         DstLayout {
-            _align: match NonZeroUsize::new(mem::align_of::<T>()) {
+            align: match NonZeroUsize::new(mem::align_of::<T>()) {
                 Some(align) => align,
                 None => unreachable!(),
             },
-            _size_info: SizeInfo::SliceDst(TrailingSliceLayout {
+            size_info: SizeInfo::SliceDst(TrailingSliceLayout {
                 _offset: 0,
                 _elem_size: mem::size_of::<T>(),
             }),
         }
+    }
+
+    /// Like `Layout::extend`, this creates a layout that describes a record
+    /// whose layout consists of `self` followed by `next` that includes the
+    /// necessary inter-field padding, but not any trailing padding.
+    ///
+    /// In order to match the layout of a `#[repr(C)]` struct, this method
+    /// should be invoked for each field in declaration order. To add trailing
+    /// padding, call `DstLayout::pad_to_align` after extending the layout for
+    /// all fields. If `self` corresponds to a type marked with
+    /// `repr(packed(N))`, then `repr_packed` should be set to `Some(N)`,
+    /// otherwise `None`.
+    ///
+    /// This method cannot be used to match the layout of a record with the
+    /// default representation, as that representation is mostly unspecified.
+    ///
+    /// # Safety
+    ///
+    /// If a (potentially hypothetical) valid `repr(C)` Rust type begins with
+    /// fields whose layout are `self`, and those fields are immediately
+    /// followed by a field whose layout is `field`, then unsafe code may rely
+    /// on `self.extend(field, repr_packed)` producing a layout that correctly
+    /// encompasses those two components.
+    ///
+    /// We make no guarantees to the behavior of this method if these fragments
+    /// cannot appear in a valid Rust type (e.g., the concatenation of the
+    /// layouts would lead to a size larger than `isize::MAX`).
+    #[doc(hidden)]
+    #[inline]
+    pub const fn extend(self, field: DstLayout, repr_packed: Option<NonZeroUsize>) -> Self {
+        use util::{core_layout::padding_needed_for, max, min};
+
+        // If `repr_packed` is `None`, there are no alignment constraints, and
+        // the value can be defaulted to `THEORETICAL_MAX_ALIGN`.
+        let max_align = match repr_packed {
+            Some(max_align) => max_align,
+            None => Self::THEORETICAL_MAX_ALIGN,
+        };
+
+        assert!(max_align.is_power_of_two());
+
+        // We use Kani to prove that this method is robust to future increases
+        // in Rust's maximum allowed alignment. However, if such a change ever
+        // actually occurs, we'd like to be notified via assertion failures.
+        #[cfg(not(kani))]
+        {
+            debug_assert!(self.align.get() <= DstLayout::CURRENT_MAX_ALIGN.get());
+            debug_assert!(field.align.get() <= DstLayout::CURRENT_MAX_ALIGN.get());
+            if let Some(repr_packed) = repr_packed {
+                debug_assert!(repr_packed.get() <= DstLayout::CURRENT_MAX_ALIGN.get());
+            }
+        }
+
+        // The field's alignment is clamped by `repr_packed` (i.e., the
+        // `repr(packed(N))` attribute, if any) [1].
+        //
+        // [1] Per https://doc.rust-lang.org/reference/type-layout.html#the-alignment-modifiers:
+        //
+        //   The alignments of each field, for the purpose of positioning
+        //   fields, is the smaller of the specified alignment and the alignment
+        //   of the field's type.
+        let field_align = min(field.align, max_align);
+
+        // The struct's alignment is the maximum of its previous alignment and
+        // `field_align`.
+        let align = max(self.align, field_align);
+
+        let size_info = match self.size_info {
+            // If the layout is already a DST, we panic; DSTs cannot be extended
+            // with additional fields.
+            SizeInfo::SliceDst(..) => panic!("Cannot extend a DST with additional fields."),
+
+            SizeInfo::Sized { _size: preceding_size } => {
+                // Compute the minimum amount of inter-field padding needed to
+                // satisfy the field's alignment, and offset of the trailing
+                // field. [1]
+                //
+                // [1] Per https://doc.rust-lang.org/reference/type-layout.html#the-alignment-modifiers:
+                //
+                //   Inter-field padding is guaranteed to be the minimum
+                //   required in order to satisfy each field's (possibly
+                //   altered) alignment.
+                let padding = padding_needed_for(preceding_size, field_align);
+
+                // This will not panic (and is proven to not panic, with Kani)
+                // if the layout components can correspond to a leading layout
+                // fragment of a valid Rust type, but may panic otherwise (e.g.,
+                // combining or aligning the components would create a size
+                // exceeding `isize::MAX`).
+                let offset = match preceding_size.checked_add(padding) {
+                    Some(offset) => offset,
+                    None => panic!("Adding padding to `self`'s size overflows `usize`."),
+                };
+
+                match field.size_info {
+                    SizeInfo::Sized { _size: field_size } => {
+                        // If the trailing field is sized, the resulting layout
+                        // will be sized. Its size will be the sum of the
+                        // preceeding layout, the size of the new field, and the
+                        // size of inter-field padding between the two.
+                        //
+                        // This will not panic (and is proven with Kani to not
+                        // panic) if the layout components can correspond to a
+                        // leading layout fragment of a valid Rust type, but may
+                        // panic otherwise (e.g., combining or aligning the
+                        // components would create a size exceeding
+                        // `usize::MAX`).
+                        let size = match offset.checked_add(field_size) {
+                            Some(size) => size,
+                            None => panic!("`field` cannot be appended without the total size overflowing `usize`"),
+                        };
+                        SizeInfo::Sized { _size: size }
+                    }
+                    SizeInfo::SliceDst(TrailingSliceLayout {
+                        _offset: trailing_offset,
+                        _elem_size,
+                    }) => {
+                        // If the trailing field is dynamically sized, so too
+                        // will the resulting layout. The offset of the trailing
+                        // slice component is the sum of the offset of the
+                        // trailing field and the trailing slice offset within
+                        // that field.
+                        //
+                        // This will not panic (and is proven with Kani to not
+                        // panic) if the layout components can correspond to a
+                        // leading layout fragment of a valid Rust type, but may
+                        // panic otherwise (e.g., combining or aligning the
+                        // components would create a size exceeding
+                        // `usize::MAX`).
+                        let offset = match offset.checked_add(trailing_offset) {
+                            Some(offset) => offset,
+                            None => panic!("`field` cannot be appended without the total size overflowing `usize`"),
+                        };
+                        SizeInfo::SliceDst(TrailingSliceLayout { _offset: offset, _elem_size })
+                    }
+                }
+            }
+        };
+
+        DstLayout { align, size_info }
+    }
+
+    /// Like `Layout::pad_to_align`, this routine rounds the size of this layout
+    /// up to the nearest multiple of this type's alignment or `repr_packed`
+    /// (whichever is less). This method leaves DST layouts unchanged, since the
+    /// trailing padding of DSTs is computed at runtime.
+    ///
+    /// In order to match the layout of a `#[repr(C)]` struct, this method
+    /// should be invoked after the invocations of [`DstLayout::extend`]. If
+    /// `self` corresponds to a type marked with `repr(packed(N))`, then
+    /// `repr_packed` should be set to `Some(N)`, otherwise `None`.
+    ///
+    /// This method cannot be used to match the layout of a record with the
+    /// default representation, as that representation is mostly unspecified.
+    ///
+    /// # Safety
+    ///
+    /// If a (potentially hypothetical) valid `repr(C)` type begins with fields
+    /// whose layout are `self` followed only by zero or more bytes of trailing
+    /// padding (not included in `self`), then unsafe code may rely on
+    /// `self.pad_to_align(repr_packed)` producing a layout that correctly
+    /// encapsulates the layout of that type.
+    ///
+    /// We make no guarantees to the behavior of this method if `self` cannot
+    /// appear in a valid Rust type (e.g., because the addition of trailing
+    /// padding would lead to a size larger than `isize::MAX`).
+    #[doc(hidden)]
+    #[inline]
+    pub const fn pad_to_align(self) -> Self {
+        use util::core_layout::padding_needed_for;
+
+        let size_info = match self.size_info {
+            // For sized layouts, we add the minimum amount of trailing padding
+            // needed to satisfy alignment.
+            SizeInfo::Sized { _size: unpadded_size } => {
+                let padding = padding_needed_for(unpadded_size, self.align);
+                let size = match unpadded_size.checked_add(padding) {
+                    Some(size) => size,
+                    None => panic!("Adding padding caused size to overflow `usize`."),
+                };
+                SizeInfo::Sized { _size: size }
+            }
+            // For DST layouts, trailing padding depends on the length of the
+            // trailing DST and is computed at runtime. This does not alter the
+            // offset or element size of the layout, so we leave `size_info`
+            // unchanged.
+            size_info @ SizeInfo::SliceDst(_) => size_info,
+        };
+
+        DstLayout { align: self.align, size_info }
     }
 
     /// Validates that a cast is sound from a layout perspective.
@@ -491,7 +761,8 @@ impl DstLayout {
     /// `validate_cast_and_convert_metadata` will panic. The caller should not
     /// rely on `validate_cast_and_convert_metadata` panicking in any particular
     /// condition, even if `debug_assertions` are enabled.
-    const fn _validate_cast_and_convert_metadata(
+    #[allow(unused)]
+    const fn validate_cast_and_convert_metadata(
         &self,
         addr: usize,
         bytes_len: usize,
@@ -517,7 +788,7 @@ impl DstLayout {
         //
         // TODO(#67): Once our MSRV is 1.65, use let-else:
         // https://blog.rust-lang.org/2022/11/03/Rust-1.65.0.html#let-else-statements
-        let size_info = match self._size_info._try_to_nonzero_elem_size() {
+        let size_info = match self.size_info.try_to_nonzero_elem_size() {
             Some(size_info) => size_info,
             None => panic!("attempted to cast to slice type with zero-sized element"),
         };
@@ -550,7 +821,7 @@ impl DstLayout {
             // precondition of this method. Modulus is guaranteed not to divide
             // by 0 because `align` is non-zero.
             #[allow(clippy::arithmetic_side_effects)]
-            if (addr + offset) % self._align.get() != 0 {
+            if (addr + offset) % self.align.get() != 0 {
                 return None;
             }
         }
@@ -568,7 +839,7 @@ impl DstLayout {
                 // multiple of the alignment, or will be larger than
                 // `bytes_len`.
                 let max_total_bytes =
-                    util::_round_down_to_next_multiple_of_alignment(bytes_len, self._align);
+                    util::round_down_to_next_multiple_of_alignment(bytes_len, self.align);
                 // Calculate the maximum number of bytes that could be consumed
                 // by the trailing slice.
                 //
@@ -608,13 +879,13 @@ impl DstLayout {
                 // - By previous comment: without_padding == elems * elem_size +
                 //   offset <= max_total_bytes
                 // - By construction, `max_total_bytes` is a multiple of
-                //   `self._align`.
+                //   `self.align`.
                 // - At most, adding padding needed to round `without_padding`
                 //   up to the next multiple of the alignment will bring
                 //   `self_bytes` up to `max_total_bytes`.
                 #[allow(clippy::arithmetic_side_effects)]
                 let self_bytes = without_padding
-                    + util::core_layout::_padding_needed_for(without_padding, self._align);
+                    + util::core_layout::padding_needed_for(without_padding, self.align);
                 (elems, self_bytes)
             }
         };
@@ -703,6 +974,8 @@ impl_known_layout!(
     T: ?Sized => PhantomData<T>,
     T         => Wrapping<T>,
     T         => MaybeUninit<T>,
+    T: ?Sized => *const T,
+    T: ?Sized => *mut T,
 );
 impl_known_layout!(const N: usize, T => [T; N]);
 
@@ -717,7 +990,9 @@ safety_comment! {
     ///   `ManuallyDrop<T>` is guaranteed to have the same layout and bit
     ///   validity as `T`
     ///
-    /// TODO(#429): Once this text (added in
+    /// TODO(#429):
+    /// -  Add quotes from docs.
+    /// -  Once [1] (added in
     /// https://github.com/rust-lang/rust/pull/115522) is available on stable,
     /// quote the stable docs instead of the nightly docs.
     unsafe_impl_known_layout!(#[repr([u8])] str);
@@ -818,7 +1093,193 @@ safety_comment! {
 // TODO(#146): Document why we don't require an enum to have an explicit `repr`
 // attribute.
 #[cfg(any(feature = "derive", test))]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "derive")))]
 pub use zerocopy_derive::FromZeroes;
+
+/// Types whose validity can be checked at runtime, allowing them to be
+/// conditionally converted from byte slices.
+///
+/// WARNING: Do not implement this trait yourself! Instead, use
+/// `#[derive(TryFromBytes)]`.
+///
+/// `TryFromBytes` types can safely be deserialized from an untrusted sequence
+/// of bytes by performing a runtime check that the byte sequence contains a
+/// valid instance of `Self`.
+///
+/// `TryFromBytes` is ignorant of byte order. For byte order-aware types, see
+/// the [`byteorder`] module.
+///
+/// # What is a "valid instance"?
+///
+/// In Rust, each type has *bit validity*, which refers to the set of bit
+/// patterns which may appear in an instance of that type. It is impossible for
+/// safe Rust code to produce values which violate bit validity (ie, values
+/// outside of the "valid" set of bit patterns). If `unsafe` code produces an
+/// invalid value, this is considered [undefined behavior].
+///
+/// Rust's bit validity rules are currently being decided, which means that some
+/// types have three classes of bit patterns: those which are definitely valid,
+/// and whose validity is documented in the language; those which may or may not
+/// be considered valid at some point in the future; and those which are
+/// definitely invalid.
+///
+/// Zerocopy takes a conservative approach, and only considers a bit pattern to
+/// be valid if its validity is a documenteed guarantee provided by the
+/// language.
+///
+/// For most use cases, Rust's current guarantees align with programmers'
+/// intuitions about what ought to be valid. As a result, zerocopy's
+/// conservatism should not affect most users. One notable exception is unions,
+/// whose bit validity is very up in the air; zerocopy does not permit
+/// implementing `TryFromBytes` for any union type.
+///
+/// If you are negatively affected by lack of support for a particular type,
+/// we encourage you to let us know by [filing an issue][github-repo].
+///
+/// # Safety
+///
+/// On its own, `T: TryFromBytes` does not make any guarantees about the layout
+/// or representation of `T`. It merely provides the ability to perform a
+/// validity check at runtime via methods like [`try_from_ref`].
+///
+/// Currently, it is not possible to stably implement `TryFromBytes` other than
+/// by using `#[derive(TryFromBytes)]`. While there are `#[doc(hidden)]` items
+/// on this trait that provide well-defined safety invariants, no stability
+/// guarantees are made with respect to these items. In particular, future
+/// releases of zerocopy may make backwards-breaking changes to these items,
+/// including changes that only affect soundness, which may cause code which
+/// uses those items to silently become unsound.
+///
+/// [undefined behavior]: https://raphlinus.github.io/programming/rust/2018/08/17/undefined-behavior.html
+/// [github-repo]: https://github.com/google/zerocopy
+/// [`try_from_ref`]: TryFromBytes::try_from_ref
+// TODO(#5): Update `try_from_ref` doc link once it exists
+#[doc(hidden)]
+pub unsafe trait TryFromBytes {
+    /// Does a given memory range contain a valid instance of `Self`?
+    ///
+    /// # Safety
+    ///
+    /// ## Preconditions
+    ///
+    /// The memory referenced by `candidate` may only be accessed via reads for
+    /// the duration of this method call. This prohibits writes through mutable
+    /// references and through [`UnsafeCell`]s. There may exist immutable
+    /// references to the same memory which contain `UnsafeCell`s so long as:
+    /// - Those `UnsafeCell`s exist at the same byte ranges as `UnsafeCell`s in
+    ///   `Self`. This is a bidirectional property: `Self` may not contain
+    ///   `UnsafeCell`s where other references to the same memory do not, and
+    ///   vice-versa.
+    /// - Those `UnsafeCell`s are never used to perform mutation for the
+    ///   duration of this method call.
+    ///
+    /// The memory referenced by `candidate` may not be referenced by any
+    /// mutable references even if these references are not used to perform
+    /// mutation.
+    ///
+    /// `candidate` is not required to refer to a valid `Self`. However, it must
+    /// satisfy the requirement that uninitialized bytes may only be present
+    /// where it is possible for them to be present in `Self`. This is a dynamic
+    /// property: if, at a particular byte offset, a valid enum discriminant is
+    /// set, the subsequent bytes may only have uninitialized bytes as
+    /// specificed by the corresponding enum.
+    ///
+    /// Formally, given `len = size_of_val_raw(candidate)`, at every byte
+    /// offset, `b`, in the range `[0, len)`:
+    /// - If, in all instances `s: Self` of length `len`, the byte at offset `b`
+    ///   in `s` is initialized, then the byte at offset `b` within `*candidate`
+    ///   must be initialized.
+    /// - Let `c` be the contents of the byte range `[0, b)` in `*candidate`.
+    ///   Let `S` be the subset of valid instances of `Self` of length `len`
+    ///   which contain `c` in the offset range `[0, b)`. If, for all instances
+    ///   of `s: Self` in `S`, the byte at offset `b` in `s` is initialized,
+    ///   then the byte at offset `b` in `*candidate` must be initialized.
+    ///
+    ///   Pragmatically, this means that if `*candidate` is guaranteed to
+    ///   contain an enum type at a particular offset, and the enum discriminant
+    ///   stored in `*candidate` corresponds to a valid variant of that enum
+    ///   type, then it is guaranteed that the appropriate bytes of `*candidate`
+    ///   are initialized as defined by that variant's bit validity (although
+    ///   note that the variant may contain another enum type, in which case the
+    ///   same rules apply depending on the state of its discriminant, and so on
+    ///   recursively).
+    ///
+    /// ## Postconditions
+    ///
+    /// Unsafe code may assume that, if `is_bit_valid(candidate)` returns true,
+    /// `*candidate` contains a valid `Self`.
+    ///
+    /// # Panics
+    ///
+    /// `is_bit_valid` may panic. Callers are responsible for ensuring that any
+    /// `unsafe` code remains sound even in the face of `is_bit_valid`
+    /// panicking. (We support user-defined validation routines; so long as
+    /// these routines are not required to be `unsafe`, there is no way to
+    /// ensure that these do not generate panics.)
+    ///
+    /// [`UnsafeCell`]: core::cell::UnsafeCell
+    #[doc(hidden)]
+    unsafe fn is_bit_valid(candidate: Ptr<'_, Self>) -> bool;
+
+    /// Attempts to interpret a byte slice as a `Self`.
+    ///
+    /// `try_from_ref` validates that `bytes` contains a valid `Self`, and that
+    /// it satisfies `Self`'s alignment requirement. If it does, then `bytes` is
+    /// reinterpreted as a `Self`.
+    ///
+    /// Note that Rust's bit validity rules are still being decided. As such,
+    /// there exist types whose bit validity is ambiguous. See the
+    /// `TryFromBytes` docs for a discussion of how these cases are handled.
+    // TODO(#251): In a future in which we distinguish between `FromBytes` and
+    // `RefFromBytes`, this requires `where Self: RefFromBytes` to disallow
+    // interior mutability.
+    #[inline]
+    #[doc(hidden)] // TODO(#5): Finalize name before remove this attribute.
+    fn try_from_ref(bytes: &[u8]) -> Option<&Self>
+    where
+        Self: KnownLayout,
+    {
+        let maybe_self = Ptr::from(bytes).try_cast_into_no_leftover::<Self>()?;
+
+        // SAFETY:
+        // - Since `bytes` is an immutable reference, we know that no mutable
+        //   references exist to this memory region.
+        // - Since `[u8]` contains no `UnsafeCell`s, we know there are no
+        //   `&UnsafeCell` references to this memory region.
+        // - Since we don't permit implementing `TryFromBytes` for types which
+        //   contain `UnsafeCell`s, there are no `UnsafeCell`s in `Self`, and so
+        //   the requirement that all references contain `UnsafeCell`s at the
+        //   same offsets is trivially satisfied.
+        // - All bytes of `bytes` are initialized.
+        //
+        // This call may panic. If that happens, it doesn't cause any soundness
+        // issues, as we have not generated any invalid state which we need to
+        // fix before returning.
+        if unsafe { !Self::is_bit_valid(maybe_self) } {
+            return None;
+        }
+
+        // SAFETY:
+        // - Preconditions for `as_ref`:
+        //   - `is_bit_valid` guarantees that `*maybe_self` contains a valid
+        //     `Self`. Since `&[u8]` does not permit interior mutation, this
+        //     cannot be invalidated after this method returns.
+        //   - Since the argument and return types are immutable references,
+        //     Rust will prevent the caller from producing any mutable
+        //     references to the same memory region.
+        //   - Since `Self` is not allowed to contain any `UnsafeCell`s and the
+        //     same is true of `[u8]`, interior mutation is not possible. Thus,
+        //     no mutation is possible. For the same reason, there is no
+        //     mismatch between the two types in terms of which byte ranges are
+        //     referenced as `UnsafeCell`s.
+        // - Since interior mutation isn't possible within `Self`, there's no
+        //   way for the returned reference to be used to modify the byte range,
+        //   and thus there's no way for the returned reference to be used to
+        //   write an invalid `[u8]` which would be observable via the original
+        //   `&[u8]`.
+        Some(unsafe { maybe_self.as_ref() })
+    }
+}
 
 /// Types for which a sequence of bytes all set to zero represents a valid
 /// instance of the type.
@@ -882,7 +1343,8 @@ pub use zerocopy_derive::FromZeroes;
 /// If a type is marked as `FromZeroes` which violates this contract, it may
 /// cause undefined behavior.
 ///
-/// `#[derive(FromZeroes)]` only permits [types which satisfy these requirements][derive-analysis].
+/// `#[derive(FromZeroes)]` only permits [types which satisfy these
+/// requirements][derive-analysis].
 ///
 #[cfg_attr(
     feature = "derive",
@@ -949,6 +1411,8 @@ pub unsafe trait FromZeroes {
         //   as required by `u8`.
         // - Since `Self: FromZeroes`, the all-zeroes instance is a valid
         //   instance of `Self.`
+        //
+        // TODO(#429): Add references to docs and quotes.
         unsafe { ptr::write_bytes(slf.cast::<u8>(), 0, len) };
     }
 
@@ -1004,6 +1468,7 @@ pub unsafe trait FromZeroes {
     ///
     /// Panics if allocation of `size_of::<Self>()` bytes fails.
     #[cfg(feature = "alloc")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
     #[inline]
     fn new_box_zeroed() -> Box<Self>
     where
@@ -1051,6 +1516,7 @@ pub unsafe trait FromZeroes {
     /// * Panics if `size_of::<Self>() * len` overflows.
     /// * Panics if allocation of `size_of::<Self>() * len` bytes fails.
     #[cfg(feature = "alloc")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
     #[inline]
     fn new_box_slice_zeroed(len: usize) -> Box<[Self]>
     where
@@ -1117,6 +1583,7 @@ pub unsafe trait FromZeroes {
     /// * Panics if `size_of::<Self>() * len` overflows.
     /// * Panics if allocation of `size_of::<Self>() * len` bytes fails.
     #[cfg(feature = "alloc")]
+    #[cfg_attr(doc_cfg, doc(cfg(feature = "new_vec_zeroed")))]
     #[inline(always)]
     fn new_vec_zeroed(len: usize) -> Vec<Self>
     where
@@ -1126,40 +1593,71 @@ pub unsafe trait FromZeroes {
     }
 }
 
-/// Types for which any byte pattern is valid.
+/// Analyzes whether a type is [`FromBytes`].
 ///
-/// WARNING: Do not implement this trait yourself! Instead, use
-/// `#[derive(FromBytes)]` (requires the `derive` Cargo feature).
+/// This derive analyzes, at compile time, whether the annotated type satisfies
+/// the [safety conditions] of `FromBytes` and implements `FromBytes` if it is
+/// sound to do so. This derive can be applied to structs, enums, and unions;
+/// e.g.:
 ///
-/// `FromBytes` types can safely be deserialized from an untrusted sequence of
-/// bytes because any byte sequence corresponds to a valid instance of the type.
+/// ```
+/// # use zerocopy_derive::{FromBytes, FromZeroes};
+/// #[derive(FromZeroes, FromBytes)]
+/// struct MyStruct {
+/// # /*
+///     ...
+/// # */
+/// }
 ///
-/// `FromBytes` is ignorant of byte order. For byte order-aware types, see the
-/// [`byteorder`] module.
+/// #[derive(FromZeroes, FromBytes)]
+/// #[repr(u8)]
+/// enum MyEnum {
+/// #   V00, V01, V02, V03, V04, V05, V06, V07, V08, V09, V0A, V0B, V0C, V0D, V0E,
+/// #   V0F, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V1A, V1B, V1C, V1D,
+/// #   V1E, V1F, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V2A, V2B, V2C,
+/// #   V2D, V2E, V2F, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V3A, V3B,
+/// #   V3C, V3D, V3E, V3F, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V4A,
+/// #   V4B, V4C, V4D, V4E, V4F, V50, V51, V52, V53, V54, V55, V56, V57, V58, V59,
+/// #   V5A, V5B, V5C, V5D, V5E, V5F, V60, V61, V62, V63, V64, V65, V66, V67, V68,
+/// #   V69, V6A, V6B, V6C, V6D, V6E, V6F, V70, V71, V72, V73, V74, V75, V76, V77,
+/// #   V78, V79, V7A, V7B, V7C, V7D, V7E, V7F, V80, V81, V82, V83, V84, V85, V86,
+/// #   V87, V88, V89, V8A, V8B, V8C, V8D, V8E, V8F, V90, V91, V92, V93, V94, V95,
+/// #   V96, V97, V98, V99, V9A, V9B, V9C, V9D, V9E, V9F, VA0, VA1, VA2, VA3, VA4,
+/// #   VA5, VA6, VA7, VA8, VA9, VAA, VAB, VAC, VAD, VAE, VAF, VB0, VB1, VB2, VB3,
+/// #   VB4, VB5, VB6, VB7, VB8, VB9, VBA, VBB, VBC, VBD, VBE, VBF, VC0, VC1, VC2,
+/// #   VC3, VC4, VC5, VC6, VC7, VC8, VC9, VCA, VCB, VCC, VCD, VCE, VCF, VD0, VD1,
+/// #   VD2, VD3, VD4, VD5, VD6, VD7, VD8, VD9, VDA, VDB, VDC, VDD, VDE, VDF, VE0,
+/// #   VE1, VE2, VE3, VE4, VE5, VE6, VE7, VE8, VE9, VEA, VEB, VEC, VED, VEE, VEF,
+/// #   VF0, VF1, VF2, VF3, VF4, VF5, VF6, VF7, VF8, VF9, VFA, VFB, VFC, VFD, VFE,
+/// #   VFF,
+/// # /*
+///     ...
+/// # */
+/// }
 ///
-/// # Safety
+/// #[derive(FromZeroes, FromBytes)]
+/// union MyUnion {
+/// #   variant: u8,
+/// # /*
+///     ...
+/// # */
+/// }
+/// ```
 ///
-/// *This section describes what is required in order for `T: FromBytes`, and
-/// what unsafe code may assume of such types. `#[derive(FromBytes)]` only
-/// permits types which satisfy these requirements. If you don't plan on
-/// implementing `FromBytes` manually, and you don't plan on writing unsafe code
-/// that operates on `FromBytes` types, then you don't need to read this
-/// section.*
+/// [safety conditions]: trait@FromBytes#safety
 ///
-/// If `T: FromBytes`, then unsafe code may assume that:
-/// - It is sound to treat any initialized sequence of bytes of length
-///   `size_of::<T>()` as a `T`.
-/// - Given `b: &[u8]` where `b.len() == size_of::<T>()` and `b` is aligned to
-///   `align_of::<T>()`, it is sound to construct a `t: &T` at the same address
-///   as `b`, and it is sound for both `b` and `t` to be live at the same time.
+/// # Analysis
 ///
-/// If a type is marked as `FromBytes` which violates this contract, it may
-/// cause undefined behavior.
+/// *This section describes, roughly, the analysis performed by this derive to
+/// determine whether it is sound to implement `FromBytes` for a given type.
+/// Unless you are modifying the implementation of this derive, or attempting to
+/// manually implement `FromBytes` for a type yourself, you don't need to read
+/// this section.*
 ///
-/// If a type has the following properties, then it is sound to implement
+/// If a type has the following properties, then this derive can implement
 /// `FromBytes` for that type:
-/// - If the type is a struct, all of its fields must satisfy the requirements
-///   to be `FromBytes` (they do not actually have to be `FromBytes`)
+///
+/// - If the type is a struct, all of its fields must be `FromBytes`.
 /// - If the type is an enum:
 ///   - It must be a C-like enum (meaning that all variants have no fields).
 ///   - It must have a defined representation (`repr`s `C`, `u8`, `u16`, `u32`,
@@ -1177,9 +1675,14 @@ pub unsafe trait FromZeroes {
 ///
 /// [`UnsafeCell`]: core::cell::UnsafeCell
 ///
-/// # Rationale
+/// This analysis is subject to change. Unsafe code may *only* rely on the
+/// documented [safety conditions] of `FromBytes`, and must *not* rely on the
+/// implementation details of this derive.
 ///
 /// ## Why isn't an explicit representation required for structs?
+///
+/// Neither this derive, nor the [safety conditions] of `FromBytes`, requires
+/// that structs are marked with `#[repr(C)]`.
 ///
 /// Per the [Rust reference](reference),
 ///
@@ -1202,6 +1705,101 @@ pub unsafe trait FromZeroes {
 ///
 /// Whether a struct is soundly `FromBytes` therefore solely depends on whether
 /// its fields are `FromBytes`.
+// TODO(#146): Document why we don't require an enum to have an explicit `repr`
+// attribute.
+#[cfg(any(feature = "derive", test))]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "derive")))]
+pub use zerocopy_derive::FromBytes;
+
+/// Types for which any bit pattern is valid.
+///
+/// Any memory region of the appropriate length which contains initialized bytes
+/// can be viewed as any `FromBytes` type with no runtime overhead. This is
+/// useful for efficiently parsing bytes as structured data.
+///
+/// # Implementation
+///
+/// **Do not implement this trait yourself!** Instead, use
+/// [`#[derive(FromBytes)]`][derive] (requires the `derive` Cargo feature);
+/// e.g.:
+///
+/// ```
+/// # use zerocopy_derive::{FromBytes, FromZeroes};
+/// #[derive(FromZeroes, FromBytes)]
+/// struct MyStruct {
+/// # /*
+///     ...
+/// # */
+/// }
+///
+/// #[derive(FromZeroes, FromBytes)]
+/// #[repr(u8)]
+/// enum MyEnum {
+/// #   V00, V01, V02, V03, V04, V05, V06, V07, V08, V09, V0A, V0B, V0C, V0D, V0E,
+/// #   V0F, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V1A, V1B, V1C, V1D,
+/// #   V1E, V1F, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V2A, V2B, V2C,
+/// #   V2D, V2E, V2F, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V3A, V3B,
+/// #   V3C, V3D, V3E, V3F, V40, V41, V42, V43, V44, V45, V46, V47, V48, V49, V4A,
+/// #   V4B, V4C, V4D, V4E, V4F, V50, V51, V52, V53, V54, V55, V56, V57, V58, V59,
+/// #   V5A, V5B, V5C, V5D, V5E, V5F, V60, V61, V62, V63, V64, V65, V66, V67, V68,
+/// #   V69, V6A, V6B, V6C, V6D, V6E, V6F, V70, V71, V72, V73, V74, V75, V76, V77,
+/// #   V78, V79, V7A, V7B, V7C, V7D, V7E, V7F, V80, V81, V82, V83, V84, V85, V86,
+/// #   V87, V88, V89, V8A, V8B, V8C, V8D, V8E, V8F, V90, V91, V92, V93, V94, V95,
+/// #   V96, V97, V98, V99, V9A, V9B, V9C, V9D, V9E, V9F, VA0, VA1, VA2, VA3, VA4,
+/// #   VA5, VA6, VA7, VA8, VA9, VAA, VAB, VAC, VAD, VAE, VAF, VB0, VB1, VB2, VB3,
+/// #   VB4, VB5, VB6, VB7, VB8, VB9, VBA, VBB, VBC, VBD, VBE, VBF, VC0, VC1, VC2,
+/// #   VC3, VC4, VC5, VC6, VC7, VC8, VC9, VCA, VCB, VCC, VCD, VCE, VCF, VD0, VD1,
+/// #   VD2, VD3, VD4, VD5, VD6, VD7, VD8, VD9, VDA, VDB, VDC, VDD, VDE, VDF, VE0,
+/// #   VE1, VE2, VE3, VE4, VE5, VE6, VE7, VE8, VE9, VEA, VEB, VEC, VED, VEE, VEF,
+/// #   VF0, VF1, VF2, VF3, VF4, VF5, VF6, VF7, VF8, VF9, VFA, VFB, VFC, VFD, VFE,
+/// #   VFF,
+/// # /*
+///     ...
+/// # */
+/// }
+///
+/// #[derive(FromZeroes, FromBytes)]
+/// union MyUnion {
+/// #   variant: u8,
+/// # /*
+///     ...
+/// # */
+/// }
+/// ```
+///
+/// This derive performs a sophisticated, compile-time safety analysis to
+/// determine whether a type is `FromBytes`.
+///
+/// # Safety
+///
+/// *This section describes what is required in order for `T: FromBytes`, and
+/// what unsafe code may assume of such types. If you don't plan on implementing
+/// `FromBytes` manually, and you don't plan on writing unsafe code that
+/// operates on `FromBytes` types, then you don't need to read this section.*
+///
+/// If `T: FromBytes`, then unsafe code may assume that:
+/// - It is sound to treat any initialized sequence of bytes of length
+///   `size_of::<T>()` as a `T`.
+/// - Given `b: &[u8]` where `b.len() == size_of::<T>()`, `b` is aligned to
+///   `align_of::<T>()` it is sound to construct a `t: &T` at the same address
+///   as `b`, and it is sound for both `b` and `t` to be live at the same time.
+///
+/// If a type is marked as `FromBytes` which violates this contract, it may
+/// cause undefined behavior.
+///
+/// `#[derive(FromBytes)]` only permits [types which satisfy these
+/// requirements][derive-analysis].
+///
+#[cfg_attr(
+    feature = "derive",
+    doc = "[derive]: zerocopy_derive::FromBytes",
+    doc = "[derive-analysis]: zerocopy_derive::FromBytes#analysis"
+)]
+#[cfg_attr(
+    not(feature = "derive"),
+    doc = concat!("[derive]: https://docs.rs/zerocopy/", env!("CARGO_PKG_VERSION"), "/zerocopy/derive.FromBytes.html"),
+    doc = concat!("[derive-analysis]: https://docs.rs/zerocopy/", env!("CARGO_PKG_VERSION"), "/zerocopy/derive.FromBytes.html#analysis"),
+)]
 pub unsafe trait FromBytes: FromZeroes {
     // The `Self: Sized` bound makes it so that `FromBytes` is still object
     // safe.
@@ -1212,8 +1810,34 @@ pub unsafe trait FromBytes: FromZeroes {
 
     /// Interprets the given `bytes` as a `&Self` without copying.
     ///
-    /// If `bytes.len() != size_of::<T>()` or `bytes` is not aligned to
-    /// `align_of::<T>()`, this returns `None`.
+    /// If `bytes.len() != size_of::<Self>()` or `bytes` is not aligned to
+    /// `align_of::<Self>()`, this returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// // These bytes encode a `PacketHeader`.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7].as_slice();
+    ///
+    /// let header = PacketHeader::ref_from(bytes).unwrap();
+    ///
+    /// assert_eq!(header.src_port, [0, 1]);
+    /// assert_eq!(header.dst_port, [2, 3]);
+    /// assert_eq!(header.length, [4, 5]);
+    /// assert_eq!(header.checksum, [6, 7]);
+    /// ```
     #[inline]
     fn ref_from(bytes: &[u8]) -> Option<&Self>
     where
@@ -1225,11 +1849,37 @@ pub unsafe trait FromBytes: FromZeroes {
     /// Interprets the prefix of the given `bytes` as a `&Self` without copying.
     ///
     /// `ref_from_prefix` returns a reference to the first `size_of::<Self>()`
-    /// bytes of `bytes`. If `bytes.len() < size_of::<T>()` or `bytes` is not
-    /// aligned to `align_of::<T>()`, this returns `None`.
+    /// bytes of `bytes`. If `bytes.len() < size_of::<Self>()` or `bytes` is not
+    /// aligned to `align_of::<Self>()`, this returns `None`.
     ///
-    /// To also access the prefix bytes, use [`Ref::new_from_prefix`]. Then,
-    /// use [`Ref::into_ref`] to get a `&Self` with the same lifetime.
+    /// To also access the prefix bytes, use [`Ref::new_from_prefix`]. Then, use
+    /// [`Ref::into_ref`] to get a `&Self` with the same lifetime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode a `PacketHeader`.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].as_slice();
+    ///
+    /// let header = PacketHeader::ref_from_prefix(bytes).unwrap();
+    ///
+    /// assert_eq!(header.src_port, [0, 1]);
+    /// assert_eq!(header.dst_port, [2, 3]);
+    /// assert_eq!(header.length, [4, 5]);
+    /// assert_eq!(header.checksum, [6, 7]);
+    /// ```
     #[inline]
     fn ref_from_prefix(bytes: &[u8]) -> Option<&Self>
     where
@@ -1241,11 +1891,31 @@ pub unsafe trait FromBytes: FromZeroes {
     /// Interprets the suffix of the given `bytes` as a `&Self` without copying.
     ///
     /// `ref_from_suffix` returns a reference to the last `size_of::<Self>()`
-    /// bytes of `bytes`. If `bytes.len() < size_of::<T>()` or the suffix of
-    /// `bytes` is not aligned to `align_of::<T>()`, this returns `None`.
+    /// bytes of `bytes`. If `bytes.len() < size_of::<Self>()` or the suffix of
+    /// `bytes` is not aligned to `align_of::<Self>()`, this returns `None`.
     ///
-    /// To also access the suffix bytes, use [`Ref::new_from_suffix`]. Then,
-    /// use [`Ref::into_ref`] to get a `&Self` with the same lifetime.
+    /// To also access the suffix bytes, use [`Ref::new_from_suffix`]. Then, use
+    /// [`Ref::into_ref`] to get a `&Self` with the same lifetime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketTrailer {
+    ///     frame_check_sequence: [u8; 4],
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode a `PacketTrailer`.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].as_slice();
+    ///
+    /// let trailer = PacketTrailer::ref_from_suffix(bytes).unwrap();
+    ///
+    /// assert_eq!(trailer.frame_check_sequence, [6, 7, 8, 9]);
+    /// ```
     #[inline]
     fn ref_from_suffix(bytes: &[u8]) -> Option<&Self>
     where
@@ -1256,8 +1926,38 @@ pub unsafe trait FromBytes: FromZeroes {
 
     /// Interprets the given `bytes` as a `&mut Self` without copying.
     ///
-    /// If `bytes.len() != size_of::<T>()` or `bytes` is not aligned to
-    /// `align_of::<T>()`, this returns `None`.
+    /// If `bytes.len() != size_of::<Self>()` or `bytes` is not aligned to
+    /// `align_of::<Self>()`, this returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(AsBytes, FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// // These bytes encode a `PacketHeader`.
+    /// let bytes = &mut [0, 1, 2, 3, 4, 5, 6, 7][..];
+    ///
+    /// let header = PacketHeader::mut_from(bytes).unwrap();
+    ///
+    /// assert_eq!(header.src_port, [0, 1]);
+    /// assert_eq!(header.dst_port, [2, 3]);
+    /// assert_eq!(header.length, [4, 5]);
+    /// assert_eq!(header.checksum, [6, 7]);
+    ///
+    /// header.checksum = [0, 0];
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 0, 0]);
+    /// ```
     #[inline]
     fn mut_from(bytes: &mut [u8]) -> Option<&mut Self>
     where
@@ -1266,14 +1966,45 @@ pub unsafe trait FromBytes: FromZeroes {
         Ref::<&mut [u8], Self>::new(bytes).map(Ref::into_mut)
     }
 
-    /// Interprets the prefix of the given `bytes` as a `&mut Self` without copying.
+    /// Interprets the prefix of the given `bytes` as a `&mut Self` without
+    /// copying.
     ///
     /// `mut_from_prefix` returns a reference to the first `size_of::<Self>()`
-    /// bytes of `bytes`. If `bytes.len() < size_of::<T>()` or `bytes` is not
-    /// aligned to `align_of::<T>()`, this returns `None`.
+    /// bytes of `bytes`. If `bytes.len() < size_of::<Self>()` or `bytes` is not
+    /// aligned to `align_of::<Self>()`, this returns `None`.
     ///
-    /// To also access the prefix bytes, use [`Ref::new_from_prefix`]. Then,
-    /// use [`Ref::into_mut`] to get a `&mut Self` with the same lifetime.
+    /// To also access the prefix bytes, use [`Ref::new_from_prefix`]. Then, use
+    /// [`Ref::into_mut`] to get a `&mut Self` with the same lifetime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(AsBytes, FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode a `PacketHeader`.
+    /// let bytes = &mut [0, 1, 2, 3, 4, 5, 6, 7, 8, 9][..];
+    ///
+    /// let header = PacketHeader::mut_from_prefix(bytes).unwrap();
+    ///
+    /// assert_eq!(header.src_port, [0, 1]);
+    /// assert_eq!(header.dst_port, [2, 3]);
+    /// assert_eq!(header.length, [4, 5]);
+    /// assert_eq!(header.checksum, [6, 7]);
+    ///
+    /// header.checksum = [0, 0];
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 0, 0, 8, 9]);
+    /// ```
     #[inline]
     fn mut_from_prefix(bytes: &mut [u8]) -> Option<&mut Self>
     where
@@ -1285,11 +2016,35 @@ pub unsafe trait FromBytes: FromZeroes {
     /// Interprets the suffix of the given `bytes` as a `&mut Self` without copying.
     ///
     /// `mut_from_suffix` returns a reference to the last `size_of::<Self>()`
-    /// bytes of `bytes`. If `bytes.len() < size_of::<T>()` or the suffix of
-    /// `bytes` is not aligned to `align_of::<T>()`, this returns `None`.
+    /// bytes of `bytes`. If `bytes.len() < size_of::<Self>()` or the suffix of
+    /// `bytes` is not aligned to `align_of::<Self>()`, this returns `None`.
     ///
     /// To also access the suffix bytes, use [`Ref::new_from_suffix`]. Then,
     /// use [`Ref::into_mut`] to get a `&mut Self` with the same lifetime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(AsBytes, FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketTrailer {
+    ///     frame_check_sequence: [u8; 4],
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode a `PacketTrailer`.
+    /// let bytes = &mut [0, 1, 2, 3, 4, 5, 6, 7, 8, 9][..];
+    ///
+    /// let trailer = PacketTrailer::mut_from_suffix(bytes).unwrap();
+    ///
+    /// assert_eq!(trailer.frame_check_sequence, [6, 7, 8, 9]);
+    ///
+    /// trailer.frame_check_sequence = [0, 0, 0, 0];
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 0, 0, 0, 0]);
+    /// ```
     #[inline]
     fn mut_from_suffix(bytes: &mut [u8]) -> Option<&mut Self>
     where
@@ -1298,9 +2053,345 @@ pub unsafe trait FromBytes: FromZeroes {
         Ref::<&mut [u8], Self>::new_from_suffix(bytes).map(|(_, r)| r.into_mut())
     }
 
+    /// Interprets the given `bytes` as a `&[Self]` without copying.
+    ///
+    /// If `bytes.len() % size_of::<Self>() != 0` or `bytes` is not aligned to
+    /// `align_of::<Self>()`, this returns `None`.
+    ///
+    /// If you need to convert a specific number of slice elements, see
+    /// [`slice_from_prefix`](FromBytes::slice_from_prefix) or
+    /// [`slice_from_suffix`](FromBytes::slice_from_suffix).
+    ///
+    /// # Panics
+    ///
+    /// If `Self` is a zero-sized type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// # #[derive(Debug, PartialEq, Eq)]
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct Pixel {
+    ///     r: u8,
+    ///     g: u8,
+    ///     b: u8,
+    ///     a: u8,
+    /// }
+    ///
+    /// // These bytes encode two `Pixel`s.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7].as_slice();
+    ///
+    /// let pixels = Pixel::slice_from(bytes).unwrap();
+    ///
+    /// assert_eq!(pixels, &[
+    ///     Pixel { r: 0, g: 1, b: 2, a: 3 },
+    ///     Pixel { r: 4, g: 5, b: 6, a: 7 },
+    /// ]);
+    /// ```
+    #[inline]
+    fn slice_from(bytes: &[u8]) -> Option<&[Self]>
+    where
+        Self: Sized,
+    {
+        Ref::<_, [Self]>::new_slice(bytes).map(|r| r.into_slice())
+    }
+
+    /// Interprets the prefix of the given `bytes` as a `&[Self]` with length
+    /// equal to `count` without copying.
+    ///
+    /// This method verifies that `bytes.len() >= size_of::<T>() * count`
+    /// and that `bytes` is aligned to `align_of::<T>()`. It consumes the
+    /// first `size_of::<T>() * count` bytes from `bytes` to construct a
+    /// `&[Self]`, and returns the remaining bytes to the caller. It also
+    /// ensures that `sizeof::<T>() * count` does not overflow a `usize`.
+    /// If any of the length, alignment, or overflow checks fail, it returns
+    /// `None`.
+    ///
+    /// # Panics
+    ///
+    /// If `T` is a zero-sized type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// # #[derive(Debug, PartialEq, Eq)]
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct Pixel {
+    ///     r: u8,
+    ///     g: u8,
+    ///     b: u8,
+    ///     a: u8,
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode two `Pixel`s.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].as_slice();
+    ///
+    /// let (pixels, rest) = Pixel::slice_from_prefix(bytes, 2).unwrap();
+    ///
+    /// assert_eq!(pixels, &[
+    ///     Pixel { r: 0, g: 1, b: 2, a: 3 },
+    ///     Pixel { r: 4, g: 5, b: 6, a: 7 },
+    /// ]);
+    ///
+    /// assert_eq!(rest, &[8, 9]);
+    /// ```
+    #[inline]
+    fn slice_from_prefix(bytes: &[u8], count: usize) -> Option<(&[Self], &[u8])>
+    where
+        Self: Sized,
+    {
+        Ref::<_, [Self]>::new_slice_from_prefix(bytes, count).map(|(r, b)| (r.into_slice(), b))
+    }
+
+    /// Interprets the suffix of the given `bytes` as a `&[Self]` with length
+    /// equal to `count` without copying.
+    ///
+    /// This method verifies that `bytes.len() >= size_of::<T>() * count`
+    /// and that `bytes` is aligned to `align_of::<T>()`. It consumes the
+    /// last `size_of::<T>() * count` bytes from `bytes` to construct a
+    /// `&[Self]`, and returns the preceding bytes to the caller. It also
+    /// ensures that `sizeof::<T>() * count` does not overflow a `usize`.
+    /// If any of the length, alignment, or overflow checks fail, it returns
+    /// `None`.
+    ///
+    /// # Panics
+    ///
+    /// If `T` is a zero-sized type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// # #[derive(Debug, PartialEq, Eq)]
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct Pixel {
+    ///     r: u8,
+    ///     g: u8,
+    ///     b: u8,
+    ///     a: u8,
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode two `Pixel`s.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].as_slice();
+    ///
+    /// let (rest, pixels) = Pixel::slice_from_suffix(bytes, 2).unwrap();
+    ///
+    /// assert_eq!(rest, &[0, 1]);
+    ///
+    /// assert_eq!(pixels, &[
+    ///     Pixel { r: 2, g: 3, b: 4, a: 5 },
+    ///     Pixel { r: 6, g: 7, b: 8, a: 9 },
+    /// ]);
+    /// ```
+    #[inline]
+    fn slice_from_suffix(bytes: &[u8], count: usize) -> Option<(&[u8], &[Self])>
+    where
+        Self: Sized,
+    {
+        Ref::<_, [Self]>::new_slice_from_suffix(bytes, count).map(|(b, r)| (b, r.into_slice()))
+    }
+
+    /// Interprets the given `bytes` as a `&mut [Self]` without copying.
+    ///
+    /// If `bytes.len() % size_of::<T>() != 0` or `bytes` is not aligned to
+    /// `align_of::<T>()`, this returns `None`.
+    ///
+    /// If you need to convert a specific number of slice elements, see
+    /// [`mut_slice_from_prefix`](FromBytes::mut_slice_from_prefix) or
+    /// [`mut_slice_from_suffix`](FromBytes::mut_slice_from_suffix).
+    ///
+    /// # Panics
+    ///
+    /// If `T` is a zero-sized type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// # #[derive(Debug, PartialEq, Eq)]
+    /// #[derive(AsBytes, FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct Pixel {
+    ///     r: u8,
+    ///     g: u8,
+    ///     b: u8,
+    ///     a: u8,
+    /// }
+    ///
+    /// // These bytes encode two `Pixel`s.
+    /// let bytes = &mut [0, 1, 2, 3, 4, 5, 6, 7][..];
+    ///
+    /// let pixels = Pixel::mut_slice_from(bytes).unwrap();
+    ///
+    /// assert_eq!(pixels, &[
+    ///     Pixel { r: 0, g: 1, b: 2, a: 3 },
+    ///     Pixel { r: 4, g: 5, b: 6, a: 7 },
+    /// ]);
+    ///
+    /// pixels[1] = Pixel { r: 0, g: 0, b: 0, a: 0 };
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 0, 0, 0, 0]);
+    /// ```
+    #[inline]
+    fn mut_slice_from(bytes: &mut [u8]) -> Option<&mut [Self]>
+    where
+        Self: Sized + AsBytes,
+    {
+        Ref::<_, [Self]>::new_slice(bytes).map(|r| r.into_mut_slice())
+    }
+
+    /// Interprets the prefix of the given `bytes` as a `&mut [Self]` with length
+    /// equal to `count` without copying.
+    ///
+    /// This method verifies that `bytes.len() >= size_of::<T>() * count`
+    /// and that `bytes` is aligned to `align_of::<T>()`. It consumes the
+    /// first `size_of::<T>() * count` bytes from `bytes` to construct a
+    /// `&[Self]`, and returns the remaining bytes to the caller. It also
+    /// ensures that `sizeof::<T>() * count` does not overflow a `usize`.
+    /// If any of the length, alignment, or overflow checks fail, it returns
+    /// `None`.
+    ///
+    /// # Panics
+    ///
+    /// If `T` is a zero-sized type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// # #[derive(Debug, PartialEq, Eq)]
+    /// #[derive(AsBytes, FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct Pixel {
+    ///     r: u8,
+    ///     g: u8,
+    ///     b: u8,
+    ///     a: u8,
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode two `Pixel`s.
+    /// let bytes = &mut [0, 1, 2, 3, 4, 5, 6, 7, 8, 9][..];
+    ///
+    /// let (pixels, rest) = Pixel::mut_slice_from_prefix(bytes, 2).unwrap();
+    ///
+    /// assert_eq!(pixels, &[
+    ///     Pixel { r: 0, g: 1, b: 2, a: 3 },
+    ///     Pixel { r: 4, g: 5, b: 6, a: 7 },
+    /// ]);
+    ///
+    /// assert_eq!(rest, &[8, 9]);
+    ///
+    /// pixels[1] = Pixel { r: 0, g: 0, b: 0, a: 0 };
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 0, 0, 0, 0, 8, 9]);
+    /// ```
+    #[inline]
+    fn mut_slice_from_prefix(bytes: &mut [u8], count: usize) -> Option<(&mut [Self], &mut [u8])>
+    where
+        Self: Sized + AsBytes,
+    {
+        Ref::<_, [Self]>::new_slice_from_prefix(bytes, count).map(|(r, b)| (r.into_mut_slice(), b))
+    }
+
+    /// Interprets the suffix of the given `bytes` as a `&mut [Self]` with length
+    /// equal to `count` without copying.
+    ///
+    /// This method verifies that `bytes.len() >= size_of::<T>() * count`
+    /// and that `bytes` is aligned to `align_of::<T>()`. It consumes the
+    /// last `size_of::<T>() * count` bytes from `bytes` to construct a
+    /// `&[Self]`, and returns the preceding bytes to the caller. It also
+    /// ensures that `sizeof::<T>() * count` does not overflow a `usize`.
+    /// If any of the length, alignment, or overflow checks fail, it returns
+    /// `None`.
+    ///
+    /// # Panics
+    ///
+    /// If `T` is a zero-sized type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// # #[derive(Debug, PartialEq, Eq)]
+    /// #[derive(AsBytes, FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct Pixel {
+    ///     r: u8,
+    ///     g: u8,
+    ///     b: u8,
+    ///     a: u8,
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode two `Pixel`s.
+    /// let bytes = &mut [0, 1, 2, 3, 4, 5, 6, 7, 8, 9][..];
+    ///
+    /// let (rest, pixels) = Pixel::mut_slice_from_suffix(bytes, 2).unwrap();
+    ///
+    /// assert_eq!(rest, &[0, 1]);
+    ///
+    /// assert_eq!(pixels, &[
+    ///     Pixel { r: 2, g: 3, b: 4, a: 5 },
+    ///     Pixel { r: 6, g: 7, b: 8, a: 9 },
+    /// ]);
+    ///
+    /// pixels[1] = Pixel { r: 0, g: 0, b: 0, a: 0 };
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 0, 0, 0, 0]);
+    /// ```
+    #[inline]
+    fn mut_slice_from_suffix(bytes: &mut [u8], count: usize) -> Option<(&mut [u8], &mut [Self])>
+    where
+        Self: Sized + AsBytes,
+    {
+        Ref::<_, [Self]>::new_slice_from_suffix(bytes, count).map(|(b, r)| (b, r.into_mut_slice()))
+    }
+
     /// Reads a copy of `Self` from `bytes`.
     ///
     /// If `bytes.len() != size_of::<Self>()`, `read_from` returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// // These bytes encode a `PacketHeader`.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7].as_slice();
+    ///
+    /// let header = PacketHeader::read_from(bytes).unwrap();
+    ///
+    /// assert_eq!(header.src_port, [0, 1]);
+    /// assert_eq!(header.dst_port, [2, 3]);
+    /// assert_eq!(header.length, [4, 5]);
+    /// assert_eq!(header.checksum, [6, 7]);
+    /// ```
     #[inline]
     fn read_from(bytes: &[u8]) -> Option<Self>
     where
@@ -1314,6 +2405,32 @@ pub unsafe trait FromBytes: FromZeroes {
     /// `read_from_prefix` reads a `Self` from the first `size_of::<Self>()`
     /// bytes of `bytes`. If `bytes.len() < size_of::<Self>()`, it returns
     /// `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode a `PacketHeader`.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].as_slice();
+    ///
+    /// let header = PacketHeader::read_from_prefix(bytes).unwrap();
+    ///
+    /// assert_eq!(header.src_port, [0, 1]);
+    /// assert_eq!(header.dst_port, [2, 3]);
+    /// assert_eq!(header.length, [4, 5]);
+    /// assert_eq!(header.checksum, [6, 7]);
+    /// ```
     #[inline]
     fn read_from_prefix(bytes: &[u8]) -> Option<Self>
     where
@@ -1328,6 +2445,26 @@ pub unsafe trait FromBytes: FromZeroes {
     /// `read_from_suffix` reads a `Self` from the last `size_of::<Self>()`
     /// bytes of `bytes`. If `bytes.len() < size_of::<Self>()`, it returns
     /// `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::FromBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketTrailer {
+    ///     frame_check_sequence: [u8; 4],
+    /// }
+    ///
+    /// // These are more bytes than are needed to encode a `PacketTrailer`.
+    /// let bytes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].as_slice();
+    ///
+    /// let trailer = PacketTrailer::read_from_suffix(bytes).unwrap();
+    ///
+    /// assert_eq!(trailer.frame_check_sequence, [6, 7, 8, 9]);
+    /// ```
     #[inline]
     fn read_from_suffix(bytes: &[u8]) -> Option<Self>
     where
@@ -1338,21 +2475,45 @@ pub unsafe trait FromBytes: FromZeroes {
     }
 }
 
-/// Types which are safe to treat as an immutable byte slice.
+/// Analyzes whether a type is [`AsBytes`].
 ///
-/// WARNING: Do not implement this trait yourself! Instead, use
-/// `#[derive(AsBytes)]` (requires the `derive` Cargo feature).
+/// This derive analyzes, at compile time, whether the annotated type satisfies
+/// the [safety conditions] of `AsBytes` and implements `AsBytes` if it is
+/// sound to do so. This derive can be applied to structs, enums, and unions;
+/// e.g.:
 ///
-/// `AsBytes` types can be safely viewed as a slice of bytes. In particular,
-/// this means that, in any valid instance of the type, none of the bytes of the
-/// instance are uninitialized. This precludes the following types:
-/// - Structs with internal padding
-/// - Unions in which not all variants have the same length
+/// ```
+/// # use zerocopy_derive::{AsBytes};
+/// #[derive(AsBytes)]
+/// #[repr(C)]
+/// struct MyStruct {
+/// # /*
+///     ...
+/// # */
+/// }
 ///
-/// `AsBytes` is ignorant of byte order. For byte order-aware types, see the
-/// [`byteorder`] module.
+/// #[derive(AsBytes)]
+/// #[repr(u8)]
+/// enum MyEnum {
+/// #   Variant,
+/// # /*
+///     ...
+/// # */
+/// }
 ///
-/// # Custom Derive Errors
+/// #[derive(AsBytes)]
+/// #[repr(C)]
+/// union MyUnion {
+/// #   variant: u8,
+/// # /*
+///     ...
+/// # */
+/// }
+/// ```
+///
+/// [safety conditions]: trait@AsBytes#safety
+///
+/// # Error Messages
 ///
 /// Due to the way that the custom derive for `AsBytes` is implemented, you may
 /// get an error like this:
@@ -1374,31 +2535,23 @@ pub unsafe trait FromBytes: FromZeroes {
 /// the Rust Reference's page on [type layout] for more information
 /// about type layout and padding.
 ///
-/// # Safety
+/// [type layout]: https://doc.rust-lang.org/reference/type-layout.html
 ///
-/// *This section describes what is required in order for `T: AsBytes`, and what
-/// unsafe code may assume of such types. `#[derive(AsBytes)]` only permits
-/// types which satisfy these requirements. If you don't plan on implementing
-/// `AsBytes` manually, and you don't plan on writing unsafe code that operates
-/// on `AsBytes` types, then you don't need to read this section.*
+/// # Analysis
 ///
-/// If `T: AsBytes`, then unsafe code may assume that:
-/// - It is sound to treat any `t: T` as an immutable `[u8]` of length
-///   `size_of_val(t)`.
-/// - Given `t: &T`, it is sound to construct a `b: &[u8]` where `b.len() ==
-///   size_of_val(t)` at the same address as `t`, and it is sound for both `b`
-///   and `t` to be live at the same time.
+/// *This section describes, roughly, the analysis performed by this derive to
+/// determine whether it is sound to implement `AsBytes` for a given type.
+/// Unless you are modifying the implementation of this derive, or attempting to
+/// manually implement `AsBytes` for a type yourself, you don't need to read
+/// this section.*
 ///
-/// If a type is marked as `AsBytes` which violates this contract, it may cause
-/// undefined behavior.
-///
-/// If a type has the following properties, then it is sound to implement
+/// If a type has the following properties, then this derive can implement
 /// `AsBytes` for that type:
+///
 /// - If the type is a struct:
 ///   - It must have a defined representation (`repr(C)`, `repr(transparent)`,
 ///     or `repr(packed)`).
-///   - All of its fields must satisfy the requirements to be `AsBytes` (they do
-///     not actually have to be `AsBytes`).
+///   - All of its fields must be `AsBytes`.
 ///   - Its layout must have no padding. This is always true for
 ///     `repr(transparent)` and `repr(packed)`. For `repr(C)`, see the layout
 ///     algorithm described in the [Rust Reference].
@@ -1413,9 +2566,92 @@ pub unsafe trait FromBytes: FromZeroes {
 ///   is not currently implemented for, e.g., `Option<&UnsafeCell<_>>`, but it
 ///   could be one day).
 ///
-/// [type layout]: https://doc.rust-lang.org/reference/type-layout.html
-/// [Rust Reference]: https://doc.rust-lang.org/reference/type-layout.html
 /// [`UnsafeCell`]: core::cell::UnsafeCell
+///
+/// This analysis is subject to change. Unsafe code may *only* rely on the
+/// documented [safety conditions] of `FromBytes`, and must *not* rely on the
+/// implementation details of this derive.
+///
+/// [Rust Reference]: https://doc.rust-lang.org/reference/type-layout.html
+#[cfg(any(feature = "derive", test))]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "derive")))]
+pub use zerocopy_derive::AsBytes;
+
+/// Types that can be viewed as an immutable slice of initialized bytes.
+///
+/// Any `AsBytes` type can be viewed as a slice of initialized bytes of the same
+/// size. This is useful for efficiently serializing structured data as raw
+/// bytes.
+///
+/// # Implementation
+///
+/// **Do not implement this trait yourself!** Instead, use
+/// [`#[derive(AsBytes)]`][derive] (requires the `derive` Cargo feature); e.g.:
+///
+/// ```
+/// # use zerocopy_derive::AsBytes;
+/// #[derive(AsBytes)]
+/// #[repr(C)]
+/// struct MyStruct {
+/// # /*
+///     ...
+/// # */
+/// }
+///
+/// #[derive(AsBytes)]
+/// #[repr(u8)]
+/// enum MyEnum {
+/// #   Variant0,
+/// # /*
+///     ...
+/// # */
+/// }
+///
+/// #[derive(AsBytes)]
+/// #[repr(C)]
+/// union MyUnion {
+/// #   variant: u8,
+/// # /*
+///     ...
+/// # */
+/// }
+/// ```
+///
+/// This derive performs a sophisticated, compile-time safety analysis to
+/// determine whether a type is `AsBytes`. See the [derive
+/// documentation][derive] for guidance on how to interpret error messages
+/// produced by the derive's analysis.
+///
+/// # Safety
+///
+/// *This section describes what is required in order for `T: AsBytes`, and
+/// what unsafe code may assume of such types. If you don't plan on implementing
+/// `AsBytes` manually, and you don't plan on writing unsafe code that
+/// operates on `AsBytes` types, then you don't need to read this section.*
+///
+/// If `T: AsBytes`, then unsafe code may assume that:
+/// - It is sound to treat any `t: T` as an immutable `[u8]` of length
+///   `size_of_val(t)`.
+/// - Given `t: &T`, it is sound to construct a `b: &[u8]` where `b.len() ==
+///   size_of_val(t)` at the same address as `t`, and it is sound for both `b`
+///   and `t` to be live at the same time.
+///
+/// If a type is marked as `AsBytes` which violates this contract, it may cause
+/// undefined behavior.
+///
+/// `#[derive(AsBytes)]` only permits [types which satisfy these
+/// requirements][derive-analysis].
+///
+#[cfg_attr(
+    feature = "derive",
+    doc = "[derive]: zerocopy_derive::AsBytes",
+    doc = "[derive-analysis]: zerocopy_derive::AsBytes#analysis"
+)]
+#[cfg_attr(
+    not(feature = "derive"),
+    doc = concat!("[derive]: https://docs.rs/zerocopy/", env!("CARGO_PKG_VERSION"), "/zerocopy/derive.AsBytes.html"),
+    doc = concat!("[derive-analysis]: https://docs.rs/zerocopy/", env!("CARGO_PKG_VERSION"), "/zerocopy/derive.AsBytes.html#analysis"),
+)]
 pub unsafe trait AsBytes {
     // The `Self: Sized` bound makes it so that this function doesn't prevent
     // `AsBytes` from being object safe. Note that other `AsBytes` methods
@@ -1432,6 +2668,33 @@ pub unsafe trait AsBytes {
     ///
     /// `as_bytes` provides access to the bytes of this value as an immutable
     /// byte slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::AsBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(AsBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// let header = PacketHeader {
+    ///     src_port: [0, 1],
+    ///     dst_port: [2, 3],
+    ///     length: [4, 5],
+    ///     checksum: [6, 7],
+    /// };
+    ///
+    /// let bytes = header.as_bytes();
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 6, 7]);
+    /// ```
     #[inline(always)]
     fn as_bytes(&self) -> &[u8] {
         // Note that this method does not have a `Self: Sized` bound;
@@ -1458,6 +2721,8 @@ pub unsafe trait AsBytes {
         // - The total size of the resulting slice is no larger than
         //   `isize::MAX` because no allocation produced by safe code can be
         //   larger than `isize::MAX`.
+        //
+        // TODO(#429): Add references to docs and quotes.
         unsafe { slice::from_raw_parts(slf.cast::<u8>(), len) }
     }
 
@@ -1465,6 +2730,43 @@ pub unsafe trait AsBytes {
     ///
     /// `as_bytes_mut` provides access to the bytes of this value as a mutable
     /// byte slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::AsBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// # #[derive(Eq, PartialEq, Debug)]
+    /// #[derive(AsBytes, FromZeroes, FromBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// let mut header = PacketHeader {
+    ///     src_port: [0, 1],
+    ///     dst_port: [2, 3],
+    ///     length: [4, 5],
+    ///     checksum: [6, 7],
+    /// };
+    ///
+    /// let bytes = header.as_bytes_mut();
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 6, 7]);
+    ///
+    /// bytes.reverse();
+    ///
+    /// assert_eq!(header, PacketHeader {
+    ///     src_port: [7, 6],
+    ///     dst_port: [5, 4],
+    ///     length: [3, 2],
+    ///     checksum: [1, 0],
+    /// });
+    /// ```
     #[inline(always)]
     fn as_bytes_mut(&mut self) -> &mut [u8]
     where
@@ -1493,12 +2795,57 @@ pub unsafe trait AsBytes {
         // - The total size of the resulting slice is no larger than
         //   `isize::MAX` because no allocation produced by safe code can be
         //   larger than `isize::MAX`.
+        //
+        // TODO(#429): Add references to docs and quotes.
         unsafe { slice::from_raw_parts_mut(slf.cast::<u8>(), len) }
     }
 
     /// Writes a copy of `self` to `bytes`.
     ///
     /// If `bytes.len() != size_of_val(self)`, `write_to` returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::AsBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(AsBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// let header = PacketHeader {
+    ///     src_port: [0, 1],
+    ///     dst_port: [2, 3],
+    ///     length: [4, 5],
+    ///     checksum: [6, 7],
+    /// };
+    ///
+    /// let mut bytes = [0, 0, 0, 0, 0, 0, 0, 0];
+    ///
+    /// header.write_to(&mut bytes[..]);
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 6, 7]);
+    /// ```
+    ///
+    /// If too many or too few target bytes are provided, `write_to` returns
+    /// `None` and leaves the target bytes unmodified:
+    ///
+    /// ```
+    /// # use zerocopy::AsBytes;
+    /// # let header = u128::MAX;
+    /// let mut excessive_bytes = &mut [0u8; 128][..];
+    ///
+    /// let write_result = header.write_to(excessive_bytes);
+    ///
+    /// assert!(write_result.is_none());
+    /// assert_eq!(excessive_bytes, [0u8; 128]);
+    /// ```
     #[inline]
     fn write_to(&self, bytes: &mut [u8]) -> Option<()> {
         if bytes.len() != mem::size_of_val(self) {
@@ -1513,6 +2860,49 @@ pub unsafe trait AsBytes {
     ///
     /// `write_to_prefix` writes `self` to the first `size_of_val(self)` bytes
     /// of `bytes`. If `bytes.len() < size_of_val(self)`, it returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::AsBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(AsBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// let header = PacketHeader {
+    ///     src_port: [0, 1],
+    ///     dst_port: [2, 3],
+    ///     length: [4, 5],
+    ///     checksum: [6, 7],
+    /// };
+    ///
+    /// let mut bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    ///
+    /// header.write_to_prefix(&mut bytes[..]);
+    ///
+    /// assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 6, 7, 0, 0]);
+    /// ```
+    ///
+    /// If insufficient target bytes are provided, `write_to_prefix` returns
+    /// `None` and leaves the target bytes unmodified:
+    ///
+    /// ```
+    /// # use zerocopy::AsBytes;
+    /// # let header = u128::MAX;
+    /// let mut insufficent_bytes = &mut [0, 0][..];
+    ///
+    /// let write_result = header.write_to_suffix(insufficent_bytes);
+    ///
+    /// assert!(write_result.is_none());
+    /// assert_eq!(insufficent_bytes, [0, 0]);
+    /// ```
     #[inline]
     fn write_to_prefix(&self, bytes: &mut [u8]) -> Option<()> {
         let size = mem::size_of_val(self);
@@ -1524,6 +2914,56 @@ pub unsafe trait AsBytes {
     ///
     /// `write_to_suffix` writes `self` to the last `size_of_val(self)` bytes of
     /// `bytes`. If `bytes.len() < size_of_val(self)`, it returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zerocopy::AsBytes;
+    /// # use zerocopy_derive::*;
+    ///
+    /// #[derive(AsBytes)]
+    /// #[repr(C)]
+    /// struct PacketHeader {
+    ///     src_port: [u8; 2],
+    ///     dst_port: [u8; 2],
+    ///     length: [u8; 2],
+    ///     checksum: [u8; 2],
+    /// }
+    ///
+    /// let header = PacketHeader {
+    ///     src_port: [0, 1],
+    ///     dst_port: [2, 3],
+    ///     length: [4, 5],
+    ///     checksum: [6, 7],
+    /// };
+    ///
+    /// let mut bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    ///
+    /// header.write_to_suffix(&mut bytes[..]);
+    ///
+    /// assert_eq!(bytes, [0, 0, 0, 1, 2, 3, 4, 5, 6, 7]);
+    ///
+    /// let mut insufficent_bytes = &mut [0, 0][..];
+    ///
+    /// let write_result = header.write_to_suffix(insufficent_bytes);
+    ///
+    /// assert!(write_result.is_none());
+    /// assert_eq!(insufficent_bytes, [0, 0]);
+    /// ```
+    ///
+    /// If insufficient target bytes are provided, `write_to_suffix` returns
+    /// `None` and leaves the target bytes unmodified:
+    ///
+    /// ```
+    /// # use zerocopy::AsBytes;
+    /// # let header = u128::MAX;
+    /// let mut insufficent_bytes = &mut [0, 0][..];
+    ///
+    /// let write_result = header.write_to_suffix(insufficent_bytes);
+    ///
+    /// assert!(write_result.is_none());
+    /// assert_eq!(insufficent_bytes, [0, 0]);
+    /// ```
     #[inline]
     fn write_to_suffix(&self, bytes: &mut [u8]) -> Option<()> {
         let start = bytes.len().checked_sub(mem::size_of_val(self))?;
@@ -1568,101 +3008,206 @@ safety_comment! {
     /// SAFETY:
     /// Per the reference [1], "the unit tuple (`()`) ... is guaranteed as a
     /// zero-sized type to have a size of 0 and an alignment of 1."
-    /// - `FromZeroes`, `FromBytes`: There is only one possible sequence of 0
-    ///   bytes, and `()` is inhabited.
+    /// - `TryFromBytes` (with no validator), `FromZeroes`, `FromBytes`: There
+    ///   is only one possible sequence of 0 bytes, and `()` is inhabited.
     /// - `AsBytes`: Since `()` has size 0, it contains no padding bytes.
     /// - `Unaligned`: `()` has alignment 1.
     ///
     /// [1] https://doc.rust-lang.org/reference/type-layout.html#tuple-layout
-    unsafe_impl!((): FromZeroes, FromBytes, AsBytes, Unaligned);
+    unsafe_impl!((): TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
     assert_unaligned!(());
 }
 
 safety_comment! {
     /// SAFETY:
-    /// - `FromZeroes`, `FromBytes`: all bit patterns are valid for integers [1]
-    /// - `AsBytes`: integers have no padding bytes [1]
+    /// - `TryFromBytes` (with no validator), `FromZeroes`, `FromBytes`: all bit
+    ///   patterns are valid for numeric types [1]
+    /// - `AsBytes`: numeric types have no padding bytes [1]
     /// - `Unaligned` (`u8` and `i8` only): The reference [2] specifies the size
     ///   of `u8` and `i8` as 1 byte. We also know that:
-    ///   - Alignment is >= 1
-    ///   - Size is an integer multiple of alignment
+    ///   - Alignment is >= 1 [3]
+    ///   - Size is an integer multiple of alignment [4]
     ///   - The only value >= 1 for which 1 is an integer multiple is 1
     ///   Therefore, the only possible alignment for `u8` and `i8` is 1.
     ///
-    /// [1] TODO(https://github.com/rust-lang/reference/issues/1291): Once the
-    ///     reference explicitly guarantees these properties, cite it.
+    /// [1] Per https://doc.rust-lang.org/beta/reference/types/numeric.html#bit-validity:
+    ///
+    ///     For every numeric type, `T`, the bit validity of `T` is equivalent to
+    ///     the bit validity of `[u8; size_of::<T>()]`. An uninitialized byte is
+    ///     not a valid `u8`.
+    ///
+    /// TODO(https://github.com/rust-lang/reference/pull/1392): Once this text
+    /// is available on the Stable docs, cite those instead.
+    ///
     /// [2] https://doc.rust-lang.org/reference/type-layout.html#primitive-data-layout
-    unsafe_impl!(u8: FromZeroes, FromBytes, AsBytes, Unaligned);
-    unsafe_impl!(i8: FromZeroes, FromBytes, AsBytes, Unaligned);
+    ///
+    /// [3] Per https://doc.rust-lang.org/reference/type-layout.html#size-and-alignment:
+    ///
+    ///     Alignment is measured in bytes, and must be at least 1.
+    ///
+    /// [4] Per https://doc.rust-lang.org/reference/type-layout.html#size-and-alignment:
+    ///
+    ///     The size of a value is always a multiple of its alignment.
+    ///
+    /// TODO(#278): Once we've updated the trait docs to refer to `u8`s rather
+    /// than bits or bytes, update this comment, especially the reference to
+    /// [1].
+    unsafe_impl!(u8: TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+    unsafe_impl!(i8: TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
     assert_unaligned!(u8, i8);
-    unsafe_impl!(u16: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(i16: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(u32: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(i32: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(u64: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(i64: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(u128: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(i128: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(usize: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(isize: FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(u16: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(i16: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(u32: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(i32: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(u64: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(i64: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(u128: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(i128: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(usize: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(isize: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(f32: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(f64: TryFromBytes, FromZeroes, FromBytes, AsBytes);
 }
 
 safety_comment! {
     /// SAFETY:
-    /// - `FromZeroes`, `FromBytes`: the `{f32,f64}::from_bits` constructors'
-    ///   documentation [1,2] states that they are currently equivalent to
-    ///   `transmute`. [3]
-    /// - `AsBytes`: the `{f32,f64}::to_bits` methods' documentation [4,5]
-    ///   states that they are currently equivalent to `transmute`. [3]
-    ///
-    /// TODO: Make these arguments more precisely in terms of the documentation.
-    ///
-    /// [1] https://doc.rust-lang.org/nightly/std/primitive.f32.html#method.from_bits
-    /// [2] https://doc.rust-lang.org/nightly/std/primitive.f64.html#method.from_bits
-    /// [3] TODO(https://github.com/rust-lang/reference/issues/1291): Once the
-    ///     reference explicitly guarantees these properties, cite it.
-    /// [4] https://doc.rust-lang.org/nightly/std/primitive.f32.html#method.to_bits
-    /// [5] https://doc.rust-lang.org/nightly/std/primitive.f64.html#method.to_bits
-    unsafe_impl!(f32: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(f64: FromZeroes, FromBytes, AsBytes);
-}
-
-safety_comment! {
-    /// SAFETY:
-    /// - `FromZeroes`: Per the reference [1], 0x00 is a valid bit pattern for
-    ///   `bool`.
-    /// - `AsBytes`: Per the reference [1], `bool` always has a size of 1 with
-    ///   valid bit patterns 0x01 and 0x00, so the only byte of the bool is
-    ///   always initialized
+    /// - `FromZeroes`: Valid since "[t]he value false has the bit pattern
+    ///   0x00" [1].
+    /// - `AsBytes`: Since "the boolean type has a size and alignment of 1 each"
+    ///   and "The value false has the bit pattern 0x00 and the value true has
+    ///   the bit pattern 0x01" [1]. Thus, the only byte of the bool is always
+    ///   initialized.
     /// - `Unaligned`: Per the reference [1], "[a]n object with the boolean type
     ///   has a size and alignment of 1 each."
     ///
     /// [1] https://doc.rust-lang.org/reference/types/boolean.html
     unsafe_impl!(bool: FromZeroes, AsBytes, Unaligned);
     assert_unaligned!(bool);
+    /// SAFETY:
+    /// - The safety requirements for `unsafe_impl!` with an `is_bit_valid`
+    ///   closure:
+    ///   - Given `t: *mut bool` and `let r = *mut u8`, `r` refers to an object
+    ///     of the same size as that referred to by `t`. This is true because
+    ///     `bool` and `u8` have the same size (1 byte) [1].
+    ///   - Since the closure takes a `&u8` argument, given a `Ptr<'a, bool>`
+    ///     which satisfies the preconditions of
+    ///     `TryFromBytes::<bool>::is_bit_valid`, it must be guaranteed that the
+    ///     memory referenced by that `Ptr` always contains a valid `u8`. Since
+    ///     `bool`'s single byte is always initialized, `is_bit_valid`'s
+    ///     precondition requires that the same is true of its argument. Since
+    ///     `u8`'s only bit validity invariant is that its single byte must be
+    ///     initialized, this memory is guaranteed to contain a valid `u8`.
+    ///   - The alignment of `bool` is equal to the alignment of `u8`. [1] [2]
+    ///   - The impl must only return `true` for its argument if the original
+    ///     `Ptr<bool>` refers to a valid `bool`. We only return true if the
+    ///     `u8` value is 0 or 1, and both of these are valid values for `bool`.
+    ///     [3]
+    ///
+    /// [1] Per https://doc.rust-lang.org/reference/type-layout.html#primitive-data-layout:
+    ///
+    ///   The size of most primitives is given in this table.
+    ///
+    ///   | Type      | `size_of::<Type>() ` |
+    ///   |-----------|----------------------|
+    ///   | `bool`    | 1                    |
+    ///   | `u8`/`i8` | 1                    |
+    ///
+    /// [2] Per https://doc.rust-lang.org/reference/type-layout.html#size-and-alignment:
+    ///
+    ///   The size of a value is always a multiple of its alignment.
+    ///
+    /// [3] Per https://doc.rust-lang.org/reference/types/boolean.html:
+    ///
+    ///   The value false has the bit pattern 0x00 and the value true has the
+    ///   bit pattern 0x01.
+    unsafe_impl!(bool: TryFromBytes; |byte: &u8| *byte < 2);
 }
 safety_comment! {
     /// SAFETY:
-    /// - `FromZeroes`: Per the reference [1], 0x0000 is a valid bit pattern for
-    ///   `char`.
-    /// - `AsBytes`: `char` is represented as a 32-bit unsigned word (`u32`)
-    ///   [1], which is `AsBytes`. Note that unlike `u32`, not all bit patterns
-    ///   are valid for `char`.
+    /// - `FromZeroes`: Per reference [1], "[a] value of type char is a Unicode
+    ///   scalar value (i.e. a code point that is not a surrogate), represented
+    ///   as a 32-bit unsigned word in the 0x0000 to 0xD7FF or 0xE000 to
+    ///   0x10FFFF range" which contains 0x0000.
+    /// - `AsBytes`: `char` is per reference [1] "represented as a 32-bit
+    ///   unsigned word" (`u32`) which is `AsBytes`. Note that unlike `u32`, not
+    ///   all bit patterns are valid for `char`.
     ///
     /// [1] https://doc.rust-lang.org/reference/types/textual.html
     unsafe_impl!(char: FromZeroes, AsBytes);
+    /// SAFETY:
+    /// - The safety requirements for `unsafe_impl!` with an `is_bit_valid`
+    ///   closure:
+    ///   - Given `t: *mut char` and `let r = *mut u32`, `r` refers to an object
+    ///     of the same size as that referred to by `t`. This is true because
+    ///     `char` and `u32` have the same size [1].
+    ///   - Since the closure takes a `&u32` argument, given a `Ptr<'a, char>`
+    ///     which satisfies the preconditions of
+    ///     `TryFromBytes::<char>::is_bit_valid`, it must be guaranteed that the
+    ///     memory referenced by that `Ptr` always contains a valid `u32`. Since
+    ///     `char`'s bytes are always initialized [2], `is_bit_valid`'s
+    ///     precondition requires that the same is true of its argument. Since
+    ///     `u32`'s only bit validity invariant is that its bytes must be
+    ///     initialized, this memory is guaranteed to contain a valid `u32`.
+    ///   - The alignment of `char` is equal to the alignment of `u32`. [1]
+    ///   - The impl must only return `true` for its argument if the original
+    ///     `Ptr<char>` refers to a valid `char`. `char::from_u32` guarantees
+    ///     that it returns `None` if its input is not a valid `char`. [3]
+    ///
+    /// [1] Per https://doc.rust-lang.org/nightly/reference/types/textual.html#layout-and-bit-validity:
+    ///
+    ///   `char` is guaranteed to have the same size and alignment as `u32` on
+    ///   all platforms.
+    ///
+    /// [2] Per https://doc.rust-lang.org/core/primitive.char.html#method.from_u32:
+    ///
+    ///   Every byte of a `char` is guaranteed to be initialized.
+    ///
+    /// [3] Per https://doc.rust-lang.org/core/primitive.char.html#method.from_u32:
+    ///
+    ///   `from_u32()` will return `None` if the input is not a valid value for
+    ///   a `char`.
+    unsafe_impl!(char: TryFromBytes; |candidate: &u32| char::from_u32(*candidate).is_some());
 }
 safety_comment! {
     /// SAFETY:
-    /// - `FromZeroes`, `AsBytes`, `Unaligned`: Per the reference [1], `str` has
-    ///   the same layout as `[u8]`, and `[u8]` is `FromZeroes`, `AsBytes`, and
-    ///   `Unaligned`.
+    /// - `FromZeroes`, `AsBytes`, `Unaligned`: Per the reference [1], `str`
+    ///   has the same layout as `[u8]`, and `[u8]` is `FromZeroes`, `AsBytes`,
+    ///   and `Unaligned`.
     ///
     /// Note that we don't `assert_unaligned!(str)` because `assert_unaligned!`
     /// uses `align_of`, which only works for `Sized` types.
     ///
+    /// TODO(#429): Add quotes from documentation.
+    ///
     /// [1] https://doc.rust-lang.org/reference/type-layout.html#str-layout
     unsafe_impl!(str: FromZeroes, AsBytes, Unaligned);
+    /// SAFETY:
+    /// - The safety requirements for `unsafe_impl!` with an `is_bit_valid`
+    ///   closure:
+    ///   - Given `t: *mut str` and `let r = *mut [u8]`, `r` refers to an object
+    ///     of the same size as that referred to by `t`. This is true because
+    ///     `str` and `[u8]` have the same representation. [1]
+    ///   - Since the closure takes a `&[u8]` argument, given a `Ptr<'a, str>`
+    ///     which satisfies the preconditions of
+    ///     `TryFromBytes::<str>::is_bit_valid`, it must be guaranteed that the
+    ///     memory referenced by that `Ptr` always contains a valid `[u8]`.
+    ///     Since `str`'s bytes are always initialized [1], `is_bit_valid`'s
+    ///     precondition requires that the same is true of its argument. Since
+    ///     `[u8]`'s only bit validity invariant is that its bytes must be
+    ///     initialized, this memory is guaranteed to contain a valid `[u8]`.
+    ///   - The alignment of `str` is equal to the alignment of `[u8]`. [1]
+    ///   - The impl must only return `true` for its argument if the original
+    ///     `Ptr<str>` refers to a valid `str`. `str::from_utf8` guarantees that
+    ///     it returns `Err` if its input is not a valid `str`. [2]
+    ///
+    /// [1] Per https://doc.rust-lang.org/reference/types/textual.html:
+    ///
+    ///   A value of type `str` is represented the same was as `[u8]`.
+    ///
+    /// [2] Per https://doc.rust-lang.org/core/str/fn.from_utf8.html#errors:
+    ///
+    ///   Returns `Err` if the slice is not UTF-8.
+    unsafe_impl!(str: TryFromBytes; |candidate: &[u8]| core::str::from_utf8(candidate).is_ok());
 }
 
 safety_comment! {
@@ -1683,6 +3228,8 @@ safety_comment! {
     ///   be 0 bytes, which means that they must be 1 byte. The only valid
     ///   alignment for a 1-byte type is 1.
     ///
+    /// TODO(#429): Add quotes from documentation.
+    ///
     /// [1] https://doc.rust-lang.org/stable/std/num/struct.NonZeroU8.html
     /// [2] https://doc.rust-lang.org/stable/std/num/struct.NonZeroI8.html
     /// TODO(https://github.com/rust-lang/rust/pull/104082): Cite documentation
@@ -1700,12 +3247,50 @@ safety_comment! {
     unsafe_impl!(NonZeroI128: AsBytes);
     unsafe_impl!(NonZeroUsize: AsBytes);
     unsafe_impl!(NonZeroIsize: AsBytes);
+    /// SAFETY:
+    /// - The safety requirements for `unsafe_impl!` with an `is_bit_valid`
+    ///   closure:
+    ///   - Given `t: *mut NonZeroXxx` and `let r = *mut xxx`, `r` refers to an
+    ///     object of the same size as that referred to by `t`. This is true
+    ///     because `NonZeroXxx` and `xxx` have the same size. [1]
+    ///   - Since the closure takes a `&xxx` argument, given a `Ptr<'a,
+    ///     NonZeroXxx>` which satisfies the preconditions of
+    ///     `TryFromBytes::<NonZeroXxx>::is_bit_valid`, it must be guaranteed
+    ///     that the memory referenced by that `Ptr` always contains a valid
+    ///     `xxx`. Since `NonZeroXxx`'s bytes are always initialized [1],
+    ///     `is_bit_valid`'s precondition requires that the same is true of its
+    ///     argument. Since `xxx`'s only bit validity invariant is that its
+    ///     bytes must be initialized, this memory is guaranteed to contain a
+    ///     valid `xxx`.
+    ///   - The alignment of `NonZeroXxx` is equal to the alignment of `xxx`.
+    ///     [1]
+    ///   - The impl must only return `true` for its argument if the original
+    ///     `Ptr<NonZeroXxx>` refers to a valid `NonZeroXxx`. The only `xxx`
+    ///     which is not also a valid `NonZeroXxx` is 0. [1]
+    ///
+    /// [1] Per https://doc.rust-lang.org/core/num/struct.NonZeroU16.html:
+    ///
+    ///   `NonZeroU16` is guaranteed to have the same layout and bit validity as
+    ///   `u16` with the exception that `0` is not a valid instance.
+    unsafe_impl!(NonZeroU8: TryFromBytes; |n: &u8| *n != 0);
+    unsafe_impl!(NonZeroI8: TryFromBytes; |n: &i8| *n != 0);
+    unsafe_impl!(NonZeroU16: TryFromBytes; |n: &u16| *n != 0);
+    unsafe_impl!(NonZeroI16: TryFromBytes; |n: &i16| *n != 0);
+    unsafe_impl!(NonZeroU32: TryFromBytes; |n: &u32| *n != 0);
+    unsafe_impl!(NonZeroI32: TryFromBytes; |n: &i32| *n != 0);
+    unsafe_impl!(NonZeroU64: TryFromBytes; |n: &u64| *n != 0);
+    unsafe_impl!(NonZeroI64: TryFromBytes; |n: &i64| *n != 0);
+    unsafe_impl!(NonZeroU128: TryFromBytes; |n: &u128| *n != 0);
+    unsafe_impl!(NonZeroI128: TryFromBytes; |n: &i128| *n != 0);
+    unsafe_impl!(NonZeroUsize: TryFromBytes; |n: &usize| *n != 0);
+    unsafe_impl!(NonZeroIsize: TryFromBytes; |n: &isize| *n != 0);
 }
 safety_comment! {
     /// SAFETY:
-    /// - `FromZeroes`, `FromBytes`, `AsBytes`: The Rust compiler reuses `0`
-    ///   value to represent `None`, so `size_of::<Option<NonZeroXxx>>() ==
-    ///   size_of::<xxx>()`; see `NonZeroXxx` documentation.
+    /// - `TryFromBytes` (with no validator), `FromZeroes`, `FromBytes`,
+    ///   `AsBytes`: The Rust compiler reuses `0` value to represent `None`, so
+    ///   `size_of::<Option<NonZeroXxx>>() == size_of::<xxx>()`; see
+    ///   `NonZeroXxx` documentation.
     /// - `Unaligned`: `NonZeroU8` and `NonZeroI8` document that
     ///   `Option<NonZeroU8>` and `Option<NonZeroI8>` both have size 1. [1] [2]
     ///   This is worded in a way that makes it unclear whether it's meant as a
@@ -1713,37 +3298,82 @@ safety_comment! {
     ///   unthinkable that that would ever change. The only valid alignment for
     ///   a 1-byte type is 1.
     ///
+    /// TODO(#429): Add quotes from documentation.
+    ///
     /// [1] https://doc.rust-lang.org/stable/std/num/struct.NonZeroU8.html
     /// [2] https://doc.rust-lang.org/stable/std/num/struct.NonZeroI8.html
     ///
     /// TODO(https://github.com/rust-lang/rust/pull/104082): Cite documentation
     /// for layout guarantees.
-    unsafe_impl!(Option<NonZeroU8>: FromZeroes, FromBytes, AsBytes, Unaligned);
-    unsafe_impl!(Option<NonZeroI8>: FromZeroes, FromBytes, AsBytes, Unaligned);
+    unsafe_impl!(Option<NonZeroU8>: TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+    unsafe_impl!(Option<NonZeroI8>: TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
     assert_unaligned!(Option<NonZeroU8>, Option<NonZeroI8>);
-    unsafe_impl!(Option<NonZeroU16>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroI16>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroU32>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroI32>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroU64>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroI64>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroU128>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroI128>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroUsize>: FromZeroes, FromBytes, AsBytes);
-    unsafe_impl!(Option<NonZeroIsize>: FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroU16>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroI16>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroU32>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroI32>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroU64>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroI64>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroU128>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroI128>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroUsize>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
+    unsafe_impl!(Option<NonZeroIsize>: TryFromBytes, FromZeroes, FromBytes, AsBytes);
 }
 
 safety_comment! {
     /// SAFETY:
-    /// For all `T`, `PhantomData<T>` has size 0 and alignment 1. [1]
-    /// - `FromZeroes`, `FromBytes`: There is only one possible sequence of 0
-    ///   bytes, and `PhantomData` is inhabited.
+    /// The following types can be transmuted from `[0u8; size_of::<T>()]`. [1]
+    /// None of them contain `UnsafeCell`s, and so they all soundly implement
+    /// `FromZeroes`.
+    ///
+    /// [1] Per
+    /// https://doc.rust-lang.org/nightly/core/option/index.html#representation:
+    ///
+    ///   Rust guarantees to optimize the following types `T` such that
+    ///   [`Option<T>`] has the same size and alignment as `T`. In some of these
+    ///   cases, Rust further guarantees that `transmute::<_, Option<T>>([0u8;
+    ///   size_of::<T>()])` is sound and produces `Option::<T>::None`. These
+    ///   cases are identified by the second column:
+    ///
+    ///   | `T`                   | `transmute::<_, Option<T>>([0u8; size_of::<T>()])` sound? |
+    ///   |-----------------------|-----------------------------------------------------------|
+    ///   | [`Box<U>`]            | when `U: Sized`                                           |
+    ///   | `&U`                  | when `U: Sized`                                           |
+    ///   | `&mut U`              | when `U: Sized`                                           |
+    ///   | [`ptr::NonNull<U>`]   | when `U: Sized`                                           |
+    ///   | `fn`, `extern "C" fn` | always                                                    |
+    ///
+    /// TODO(#429), TODO(https://github.com/rust-lang/rust/pull/115333): Cite
+    /// the Stable docs once they're available.
+    #[cfg(feature = "alloc")]
+    unsafe_impl!(
+        #[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
+        T => FromZeroes for Option<Box<T>>
+    );
+    unsafe_impl!(T => FromZeroes for Option<&'_ T>);
+    unsafe_impl!(T => FromZeroes for Option<&'_ mut T>);
+    unsafe_impl!(T => FromZeroes for Option<NonNull<T>>);
+    unsafe_impl_for_power_set!(A, B, C, D, E, F, G, H, I, J, K, L -> M => FromZeroes for opt_fn!(...));
+    unsafe_impl_for_power_set!(A, B, C, D, E, F, G, H, I, J, K, L -> M => FromZeroes for opt_extern_c_fn!(...));
+}
+
+safety_comment! {
+    /// SAFETY:
+    /// Per reference [1]:
+    /// "For all T, the following are guaranteed:
+    /// size_of::<PhantomData<T>>() == 0
+    /// align_of::<PhantomData<T>>() == 1".
+    /// This gives:
+    /// - `TryFromBytes` (with no validator), `FromZeroes`, `FromBytes`: There
+    ///   is only one possible sequence of 0 bytes, and `PhantomData` is
+    ///   inhabited.
     /// - `AsBytes`: Since `PhantomData` has size 0, it contains no padding
     ///   bytes.
     /// - `Unaligned`: Per the preceding reference, `PhantomData` has alignment
     ///   1.
     ///
     /// [1] https://doc.rust-lang.org/std/marker/struct.PhantomData.html#layout-1
+    unsafe_impl!(T: ?Sized => TryFromBytes for PhantomData<T>);
     unsafe_impl!(T: ?Sized => FromZeroes for PhantomData<T>);
     unsafe_impl!(T: ?Sized => FromBytes for PhantomData<T>);
     unsafe_impl!(T: ?Sized => AsBytes for PhantomData<T>);
@@ -1752,13 +3382,59 @@ safety_comment! {
 }
 safety_comment! {
     /// SAFETY:
-    /// `Wrapping<T>` is guaranteed by its docs [1] to have the same layout as
-    /// `T`. Also, `Wrapping<T>` is `#[repr(transparent)]`, and has a single
-    /// field, which is `pub`. Per the reference [2], this means that the
-    /// `#[repr(transparent)]` attribute is "considered part of the public ABI".
+    /// `Wrapping<T>` is guaranteed by its docs [1] to have the same layout and
+    /// bit validity as `T`. Also, `Wrapping<T>` is `#[repr(transparent)]`, and
+    /// has a single field, which is `pub`. Per the reference [2], this means
+    /// that the `#[repr(transparent)]` attribute is "considered part of the
+    /// public ABI".
     ///
-    /// [1] https://doc.rust-lang.org/nightly/core/num/struct.Wrapping.html#layout-1
+    /// - `TryFromBytes`: The safety requirements for `unsafe_impl!` with an
+    ///   `is_bit_valid` closure:
+    ///   - Given `t: *mut Wrapping<T>` and `let r = *mut T`, `r` refers to an
+    ///     object of the same size as that referred to by `t`. This is true
+    ///     because `Wrapping<T>` and `T` have the same layout
+    ///   - The alignment of `Wrapping<T>` is equal to the alignment of `T`.
+    ///   - The impl must only return `true` for its argument if the original
+    ///     `Ptr<Wrapping<T>>` refers to a valid `Wrapping<T>`. Since
+    ///     `Wrapping<T>` has the same bit validity as `T`, and since our impl
+    ///     just calls `T::is_bit_valid`, our impl returns `true` exactly when
+    ///     its argument contains a valid `Wrapping<T>`.
+    /// - `FromBytes`: Since `Wrapping<T>` has the same bit validity as `T`, if
+    ///   `T: FromBytes`, then all initialized byte sequences are valid
+    ///   instances of `Wrapping<T>`. Similarly, if `T: FromBytes`, then
+    ///   `Wrapping<T>` doesn't contain any `UnsafeCell`s. Thus, `impl FromBytes
+    ///   for Wrapping<T> where T: FromBytes` is a sound impl.
+    /// - `AsBytes`: Since `Wrapping<T>` has the same bit validity as `T`, if
+    ///   `T: AsBytes`, then all valid instances of `Wrapping<T>` have all of
+    ///   their bytes initialized. Similarly, if `T: AsBytes`, then
+    ///   `Wrapping<T>` doesn't contain any `UnsafeCell`s. Thus, `impl AsBytes
+    ///   for Wrapping<T> where T: AsBytes` is a valid impl.
+    /// - `Unaligned`: Since `Wrapping<T>` has the same layout as `T`,
+    ///   `Wrapping<T>` has alignment 1 exactly when `T` does.
+    ///
+    /// [1] Per https://doc.rust-lang.org/core/num/struct.NonZeroU16.html:
+    ///
+    ///   `NonZeroU16` is guaranteed to have the same layout and bit validity as
+    ///   `u16` with the exception that `0` is not a valid instance.
+    ///
+    /// TODO(#429): Add quotes from documentation.
+    ///
+    /// [1] TODO(https://doc.rust-lang.org/nightly/core/num/struct.Wrapping.html#layout-1):
+    /// Reference this documentation once it's available on stable.
+    ///
     /// [2] https://doc.rust-lang.org/nomicon/other-reprs.html#reprtransparent
+    unsafe_impl!(T: TryFromBytes => TryFromBytes for Wrapping<T>; |candidate: Ptr<T>| {
+        // SAFETY:
+        // - Since `T` and `Wrapping<T>` have the same layout and bit validity
+        //   and contain the same fields, `T` contains `UnsafeCell`s exactly
+        //   where `Wrapping<T>` does. Thus, all memory and `UnsafeCell`
+        //   preconditions of `T::is_bit_valid` hold exactly when the same
+        //   preconditions for `Wrapping<T>::is_bit_valid` hold.
+        // - By the same token, since `candidate` is guaranteed to have its
+        //   bytes initialized where there are always initialized bytes in
+        //   `Wrapping<T>`, the same is true for `T`.
+        unsafe { T::is_bit_valid(candidate) }
+    });
     unsafe_impl!(T: FromZeroes => FromZeroes for Wrapping<T>);
     unsafe_impl!(T: FromBytes => FromBytes for Wrapping<T>);
     unsafe_impl!(T: AsBytes => AsBytes for Wrapping<T>);
@@ -1770,22 +3446,23 @@ safety_comment! {
     // since it may contain uninitialized bytes.
     //
     /// SAFETY:
-    /// - `FromZeroes`, `FromBytes`: `MaybeUninit<T>` has no restrictions on its
-    ///   contents. Unfortunately, in addition to bit validity, `FromZeroes` and
+    /// - `TryFromBytes` (with no validator), `FromZeroes`, `FromBytes`:
+    ///   `MaybeUninit<T>` has no restrictions on its contents. Unfortunately,
+    ///   in addition to bit validity, `TryFromBytes`, `FromZeroes` and
     ///   `FromBytes` also require that implementers contain no `UnsafeCell`s.
-    ///   Thus, we require `T: FromZeroes` and `T: FromBytes` in order to ensure
-    ///   that `T` - and thus `MaybeUninit<T>` - contains to `UnsafeCell`s.
-    ///   Thus, requiring that `T` implement each of these traits is sufficient
-    /// - `Unaligned`: `MaybeUninit<T>` is guaranteed by its documentation [1]
-    ///   to have the same alignment as `T`.
+    ///   Thus, we require `T: Trait` in order to ensure that `T` - and thus
+    ///   `MaybeUninit<T>` - contains to `UnsafeCell`s. Thus, requiring that `T`
+    ///   implement each of these traits is sufficient.
+    /// - `Unaligned`: "MaybeUninit<T> is guaranteed to have the same size,
+    ///    alignment, and ABI as T" [1]
     ///
-    /// [1]
-    /// https://doc.rust-lang.org/nightly/core/mem/union.MaybeUninit.html#layout-1
+    /// [1] https://doc.rust-lang.org/stable/core/mem/union.MaybeUninit.html#layout-1
     ///
     /// TODO(https://github.com/google/zerocopy/issues/251): If we split
     /// `FromBytes` and `RefFromBytes`, or if we introduce a separate
     /// `NoCell`/`Freeze` trait, we can relax the trait bounds for `FromZeroes`
     /// and `FromBytes`.
+    unsafe_impl!(T: TryFromBytes => TryFromBytes for MaybeUninit<T>);
     unsafe_impl!(T: FromZeroes => FromZeroes for MaybeUninit<T>);
     unsafe_impl!(T: FromBytes => FromBytes for MaybeUninit<T>);
     unsafe_impl!(T: Unaligned => Unaligned for MaybeUninit<T>);
@@ -1810,12 +3487,14 @@ safety_comment! {
     /// - `Unaligned`: `ManuallyDrop` has the same layout (and thus alignment)
     ///   as `T`, and `T: Unaligned` guarantees that that alignment is 1.
     ///
-    /// [1] Per https://doc.rust-lang.org/nightly/core/mem/struct.ManuallyDrop.html:
-    ///
     ///   `ManuallyDrop<T>` is guaranteed to have the same layout and bit
     ///   validity as `T`
     ///
-    /// TODO(#429): Once this text (added in
+    /// [1] Per https://doc.rust-lang.org/nightly/core/mem/struct.ManuallyDrop.html:
+    ///
+    /// TODO(#429):
+    /// - Add quotes from docs.
+    /// - Once [1] (added in
     /// https://github.com/rust-lang/rust/pull/115522) is available on stable,
     /// quote the stable docs instead of the nightly docs.
     unsafe_impl!(T: ?Sized + FromZeroes => FromZeroes for ManuallyDrop<T>);
@@ -1839,8 +3518,8 @@ safety_comment! {
     ///
     /// In other words, the layout of a `[T]` or `[T; N]` is a sequence of `T`s
     /// laid out back-to-back with no bytes in between. Therefore, `[T]` or `[T;
-    /// N]` are `FromZeroes`, `FromBytes`, and `AsBytes` if `T` is
-    /// (respectively). Furthermore, since an array/slice has "the same
+    /// N]` are `TryFromBytes`, `FromZeroes`, `FromBytes`, and `AsBytes` if `T`
+    /// is (respectively). Furthermore, since an array/slice has "the same
     /// alignment of `T`", `[T]` and `[T; N]` are `Unaligned` if `T` is.
     ///
     /// Note that we don't `assert_unaligned!` for slice types because
@@ -1852,10 +3531,62 @@ safety_comment! {
     unsafe_impl!(const N: usize, T: AsBytes => AsBytes for [T; N]);
     unsafe_impl!(const N: usize, T: Unaligned => Unaligned for [T; N]);
     assert_unaligned!([(); 0], [(); 1], [u8; 0], [u8; 1]);
+    unsafe_impl!(T: TryFromBytes => TryFromBytes for [T]; |c: Ptr<[T]>| {
+        // SAFETY: Assuming the preconditions of `is_bit_valid` are satisfied,
+        // so too will the postcondition: that, if `is_bit_valid(candidate)`
+        // returns true, `*candidate` contains a valid `Self`. Per the reference
+        // [1]:
+        //
+        //   An array of `[T; N]` has a size of `size_of::<T>() * N` and the
+        //   same alignment of `T`. Arrays are laid out so that the zero-based
+        //   `nth` element of the array is offset from the start of the array by
+        //   `n * size_of::<T>()` bytes.
+        //
+        //   ...
+        //
+        //   Slices have the same layout as the section of the array they slice.
+        //
+        // In other words, the layout of a `[T] is a sequence of `T`s laid out
+        // back-to-back with no bytes in between. If all elements in `candidate`
+        // are `is_bit_valid`, so too is `candidate`.
+        //
+        // Note that any of the below calls may panic, but it would still be
+        // sound even if it did. `is_bit_valid` does not promise that it will
+        // not panic (in fact, it explicitly warns that it's a possibility), and
+        // we have not violated any safety invariants that we must fix before
+        // returning.
+        c.iter().all(|elem|
+            // SAFETY: We uphold the safety contract of `is_bit_valid(elem)`, by
+            // precondition on the surrounding call to `is_bit_valid`. The
+            // memory referenced by `elem` is contained entirely within `c`, and
+            // satisfies the preconditions satisfied by `c`. By axiom, we assume
+            // that `Iterator:all` does not invalidate these preconditions
+            // (e.g., by writing to `elem`.) Since `elem` is derived from `c`,
+            // it is only possible for uninitialized bytes to occur in `elem` at
+            // the same bytes they occur within `c`.
+            unsafe { <T as TryFromBytes>::is_bit_valid(elem) }
+        )
+    });
     unsafe_impl!(T: FromZeroes => FromZeroes for [T]);
     unsafe_impl!(T: FromBytes => FromBytes for [T]);
     unsafe_impl!(T: AsBytes => AsBytes for [T]);
     unsafe_impl!(T: Unaligned => Unaligned for [T]);
+}
+safety_comment! {
+    /// SAFETY:
+    /// - `FromZeroes`: For thin pointers (note that `T: Sized`), the zero
+    ///   pointer is considered "null". [1] No operations which require
+    ///   provenance are legal on null pointers, so this is not a footgun.
+    ///
+    /// NOTE(#170): Implementing `FromBytes` and `AsBytes` for raw pointers
+    /// would be sound, but carries provenance footguns. We want to support
+    /// `FromBytes` and `AsBytes` for raw pointers eventually, but we are
+    /// holding off until we can figure out how to address those footguns.
+    ///
+    /// [1] TODO(https://github.com/rust-lang/rust/pull/116988): Cite the
+    /// documentation once this PR lands.
+    unsafe_impl!(T => FromZeroes for *const T);
+    unsafe_impl!(T => FromZeroes for *mut T);
 }
 
 // SIMD support
@@ -1903,8 +3634,8 @@ safety_comment! {
 // Given this background, we can observe that:
 // - The size and bit pattern requirements of a SIMD type are equivalent to the
 //   equivalent array type. Thus, for any SIMD type whose primitive `T` is
-//   `FromZeroes`, `FromBytes`, or `AsBytes`, that SIMD type is also
-//   `FromZeroes`, `FromBytes`, or `AsBytes` respectively.
+//   `TryFromBytes`, `FromZeroes`, `FromBytes`, or `AsBytes`, that SIMD type is
+//   also `TryFromBytes`, `FromZeroes`, `FromBytes`, or `AsBytes` respectively.
 // - Since no upper bound is placed on the alignment, no SIMD type can be
 //   guaranteed to be `Unaligned`.
 //
@@ -1915,17 +3646,19 @@ safety_comment! {
 //
 // See issue #38 [2]. While this behavior is not technically guaranteed, the
 // likelihood that the behavior will change such that SIMD types are no longer
-// `FromZeroes`, `FromBytes`, or `AsBytes` is next to zero, as that would defeat
-// the entire purpose of SIMD types. Nonetheless, we put this behavior behind
-// the `simd` Cargo feature, which requires consumers to opt into this stability
-// hazard.
+// `TryFromBytes`, `FromZeroes`, `FromBytes`, or `AsBytes` is next to zero, as
+// that would defeat the entire purpose of SIMD types. Nonetheless, we put this
+// behavior behind the `simd` Cargo feature, which requires consumers to opt
+// into this stability hazard.
 //
 // [1] https://rust-lang.github.io/unsafe-code-guidelines/layout/packed-simd-vectors.html
 // [2] https://github.com/rust-lang/unsafe-code-guidelines/issues/38
 #[cfg(feature = "simd")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "simd")))]
 mod simd {
-    /// Defines a module which implements `FromZeroes`, `FromBytes`, and
-    /// `AsBytes` for a set of types from a module in `core::arch`.
+    /// Defines a module which implements `TryFromBytes`, `FromZeroes`,
+    /// `FromBytes`, and `AsBytes` for a set of types from a module in
+    /// `core::arch`.
     ///
     /// `$arch` is both the name of the defined module and the name of the
     /// module in `core::arch`, and `$typ` is the list of items from that module
@@ -1934,7 +3667,9 @@ mod simd {
                             // target/feature combinations don't emit any impls
                             // and thus don't use this macro.
     macro_rules! simd_arch_mod {
-        ($arch:ident, $mod:ident, $($typ:ident),*) => {
+        (#[cfg $cfg:tt] $arch:ident, $mod:ident, $($typ:ident),*) => {
+            #[cfg $cfg]
+            #[cfg_attr(doc_cfg, doc(cfg $cfg))]
             mod $mod {
                 use core::arch::$arch::{$($typ),*};
 
@@ -1943,54 +3678,57 @@ mod simd {
                 safety_comment! {
                     /// SAFETY:
                     /// See comment on module definition for justification.
-                    $( unsafe_impl!($typ: FromZeroes, FromBytes, AsBytes); )*
+                    $( unsafe_impl!($typ: TryFromBytes, FromZeroes, FromBytes, AsBytes); )*
                 }
             }
         };
     }
 
-    #[cfg(target_arch = "x86")]
-    simd_arch_mod!(x86, x86, __m128, __m128d, __m128i, __m256, __m256d, __m256i);
-    #[cfg(all(feature = "simd-nightly", target_arch = "x86"))]
-    simd_arch_mod!(x86, x86_nightly, __m512bh, __m512, __m512d, __m512i);
-    #[cfg(target_arch = "x86_64")]
-    simd_arch_mod!(x86_64, x86_64, __m128, __m128d, __m128i, __m256, __m256d, __m256i);
-    #[cfg(all(feature = "simd-nightly", target_arch = "x86_64"))]
-    simd_arch_mod!(x86_64, x86_64_nightly, __m512bh, __m512, __m512d, __m512i);
-    #[cfg(target_arch = "wasm32")]
-    simd_arch_mod!(wasm32, wasm32, v128);
-    #[cfg(all(feature = "simd-nightly", target_arch = "powerpc"))]
-    simd_arch_mod!(
-        powerpc,
-        powerpc,
-        vector_bool_long,
-        vector_double,
-        vector_signed_long,
-        vector_unsigned_long
-    );
-    #[cfg(all(feature = "simd-nightly", target_arch = "powerpc64"))]
-    simd_arch_mod!(
-        powerpc64,
-        powerpc64,
-        vector_bool_long,
-        vector_double,
-        vector_signed_long,
-        vector_unsigned_long
-    );
-    #[cfg(target_arch = "aarch64")]
     #[rustfmt::skip]
-    simd_arch_mod!(
-        aarch64, aarch64, float32x2_t, float32x4_t, float64x1_t, float64x2_t, int8x8_t, int8x8x2_t,
-        int8x8x3_t, int8x8x4_t, int8x16_t, int8x16x2_t, int8x16x3_t, int8x16x4_t, int16x4_t,
-        int16x8_t, int32x2_t, int32x4_t, int64x1_t, int64x2_t, poly8x8_t, poly8x8x2_t, poly8x8x3_t,
-        poly8x8x4_t, poly8x16_t, poly8x16x2_t, poly8x16x3_t, poly8x16x4_t, poly16x4_t, poly16x8_t,
-        poly64x1_t, poly64x2_t, uint8x8_t, uint8x8x2_t, uint8x8x3_t, uint8x8x4_t, uint8x16_t,
-        uint8x16x2_t, uint8x16x3_t, uint8x16x4_t, uint16x4_t, uint16x8_t, uint32x2_t, uint32x4_t,
-        uint64x1_t, uint64x2_t
-    );
-    #[cfg(all(feature = "simd-nightly", target_arch = "arm"))]
-    #[rustfmt::skip]
-    simd_arch_mod!(arm, arm, int8x4_t, uint8x4_t);
+    const _: () = {
+        simd_arch_mod!(
+            #[cfg(target_arch = "x86")]
+            x86, x86, __m128, __m128d, __m128i, __m256, __m256d, __m256i
+        );
+        simd_arch_mod!(
+            #[cfg(all(feature = "simd-nightly", target_arch = "x86"))]
+            x86, x86_nightly, __m512bh, __m512, __m512d, __m512i
+        );
+        simd_arch_mod!(
+            #[cfg(target_arch = "x86_64")]
+            x86_64, x86_64, __m128, __m128d, __m128i, __m256, __m256d, __m256i
+        );
+        simd_arch_mod!(
+            #[cfg(all(feature = "simd-nightly", target_arch = "x86_64"))]
+            x86_64, x86_64_nightly, __m512bh, __m512, __m512d, __m512i
+        );
+        simd_arch_mod!(
+            #[cfg(target_arch = "wasm32")]
+            wasm32, wasm32, v128
+        );
+        simd_arch_mod!(
+            #[cfg(all(feature = "simd-nightly", target_arch = "powerpc"))]
+            powerpc, powerpc, vector_bool_long, vector_double, vector_signed_long, vector_unsigned_long
+        );
+        simd_arch_mod!(
+            #[cfg(all(feature = "simd-nightly", target_arch = "powerpc64"))]
+            powerpc64, powerpc64, vector_bool_long, vector_double, vector_signed_long, vector_unsigned_long
+        );
+        simd_arch_mod!(
+            #[cfg(target_arch = "aarch64")]
+            aarch64, aarch64, float32x2_t, float32x4_t, float64x1_t, float64x2_t, int8x8_t, int8x8x2_t,
+            int8x8x3_t, int8x8x4_t, int8x16_t, int8x16x2_t, int8x16x3_t, int8x16x4_t, int16x4_t,
+            int16x8_t, int32x2_t, int32x4_t, int64x1_t, int64x2_t, poly8x8_t, poly8x8x2_t, poly8x8x3_t,
+            poly8x8x4_t, poly8x16_t, poly8x16x2_t, poly8x16x3_t, poly8x16x4_t, poly16x4_t, poly16x8_t,
+            poly64x1_t, poly64x2_t, uint8x8_t, uint8x8x2_t, uint8x8x3_t, uint8x8x4_t, uint8x16_t,
+            uint8x16x2_t, uint8x16x3_t, uint8x16x4_t, uint16x4_t, uint16x8_t, uint32x2_t, uint32x4_t,
+            uint64x1_t, uint64x2_t
+        );
+        simd_arch_mod!(
+            #[cfg(all(feature = "simd-nightly", target_arch = "arm"))]
+            arm, arm, int8x4_t, uint8x4_t
+        );
+    };
 }
 
 /// Safely transmutes a value of one type to a value of another type of the same
@@ -2004,6 +3742,17 @@ mod simd {
 /// Note that the `T` produced by the expression `$e` will *not* be dropped.
 /// Semantically, its bits will be copied into a new value of type `U`, the
 /// original `T` will be forgotten, and the value of type `U` will be returned.
+///
+/// # Examples
+///
+/// ```
+/// # use zerocopy::transmute;
+/// let one_dimensional: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+///
+/// let two_dimensional: [[u8; 4]; 2] = transmute!(one_dimensional);
+///
+/// assert_eq!(two_dimensional, [[0, 1, 2, 3], [4, 5, 6, 7]]);
+/// ```
 #[macro_export]
 macro_rules! transmute {
     ($e:expr) => {{
@@ -2058,6 +3807,17 @@ macro_rules! transmute {
 ///
 /// The lifetime of the input type, `&T` or `&mut T`, must be the same as or
 /// outlive the lifetime of the output type, `&U`.
+///
+/// # Examples
+///
+/// ```
+/// # use zerocopy::transmute_ref;
+/// let one_dimensional: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+///
+/// let two_dimensional: &[[u8; 4]; 2] = transmute_ref!(&one_dimensional);
+///
+/// assert_eq!(two_dimensional, &[[0, 1, 2, 3], [4, 5, 6, 7]]);
+/// ```
 ///
 /// # Alignment increase error message
 ///
@@ -2153,6 +3913,21 @@ macro_rules! transmute_ref {
 ///
 /// The lifetime of the input type, `&mut T`, must be the same as or outlive the
 /// lifetime of the output type, `&mut U`.
+///
+/// # Examples
+///
+/// ```
+/// # use zerocopy::transmute_mut;
+/// let mut one_dimensional: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+///
+/// let two_dimensional: &mut [[u8; 4]; 2] = transmute_mut!(&mut one_dimensional);
+///
+/// assert_eq!(two_dimensional, &[[0, 1, 2, 3], [4, 5, 6, 7]]);
+///
+/// two_dimensional.reverse();
+///
+/// assert_eq!(one_dimensional, [4, 5, 6, 7, 0, 1, 2, 3]);
+/// ```
 ///
 /// # Alignment increase error message
 ///
@@ -2268,7 +4043,7 @@ macro_rules! transmute_mut {
 /// compile time. So, for instance, an invocation with a Windows path containing
 /// backslashes `\` would not compile correctly on Unix.
 ///
-/// `include_bytes!` is ignorant of byte order. For byte order-aware types, see
+/// `include_value!` is ignorant of byte order. For byte order-aware types, see
 /// the [`byteorder`] module.
 ///
 /// # Examples
@@ -2870,12 +4645,12 @@ where
     /// `into_ref` consumes the `Ref`, and returns a reference to `T`.
     #[inline(always)]
     pub fn into_ref(self) -> &'a T {
-        // SAFETY: This is sound because `B` is guaranteed to live for the
-        // lifetime `'a`, meaning that a) the returned reference cannot outlive
-        // the `B` from which `self` was constructed and, b) no mutable methods
-        // on that `B` can be called during the lifetime of the returned
-        // reference. See the documentation on `deref_helper` for what
-        // invariants we are required to uphold.
+        assert!(B::INTO_REF_INTO_MUT_ARE_SOUND);
+
+        // SAFETY: According to the safety preconditions on
+        // `ByteSlice::INTO_REF_INTO_MUT_ARE_SOUND`, the preceding assert
+        // ensures that, given `B: 'a`, it is sound to drop `self` and still
+        // access the underlying memory using reads for `'a`.
         unsafe { self.deref_helper() }
     }
 }
@@ -2890,12 +4665,13 @@ where
     /// `into_mut` consumes the `Ref`, and returns a mutable reference to `T`.
     #[inline(always)]
     pub fn into_mut(mut self) -> &'a mut T {
-        // SAFETY: This is sound because `B` is guaranteed to live for the
-        // lifetime `'a`, meaning that a) the returned reference cannot outlive
-        // the `B` from which `self` was constructed and, b) no other methods -
-        // mutable or immutable - on that `B` can be called during the lifetime
-        // of the returned reference. See the documentation on
-        // `deref_mut_helper` for what invariants we are required to uphold.
+        assert!(B::INTO_REF_INTO_MUT_ARE_SOUND);
+
+        // SAFETY: According to the safety preconditions on
+        // `ByteSlice::INTO_REF_INTO_MUT_ARE_SOUND`, the preceding assert
+        // ensures that, given `B: 'a + ByteSliceMut`, it is sound to drop
+        // `self` and still access the underlying memory using both reads and
+        // writes for `'a`.
         unsafe { self.deref_mut_helper() }
     }
 }
@@ -2910,12 +4686,12 @@ where
     /// `into_slice` consumes the `Ref`, and returns a reference to `[T]`.
     #[inline(always)]
     pub fn into_slice(self) -> &'a [T] {
-        // SAFETY: This is sound because `B` is guaranteed to live for the
-        // lifetime `'a`, meaning that a) the returned reference cannot outlive
-        // the `B` from which `self` was constructed and, b) no mutable methods
-        // on that `B` can be called during the lifetime of the returned
-        // reference. See the documentation on `deref_slice_helper` for what
-        // invariants we are required to uphold.
+        assert!(B::INTO_REF_INTO_MUT_ARE_SOUND);
+
+        // SAFETY: According to the safety preconditions on
+        // `ByteSlice::INTO_REF_INTO_MUT_ARE_SOUND`, the preceding assert
+        // ensures that, given `B: 'a`, it is sound to drop `self` and still
+        // access the underlying memory using reads for `'a`.
         unsafe { self.deref_slice_helper() }
     }
 }
@@ -2931,13 +4707,13 @@ where
     /// `[T]`.
     #[inline(always)]
     pub fn into_mut_slice(mut self) -> &'a mut [T] {
-        // SAFETY: This is sound because `B` is guaranteed to live for the
-        // lifetime `'a`, meaning that a) the returned reference cannot outlive
-        // the `B` from which `self` was constructed and, b) no other methods -
-        // mutable or immutable - on that `B` can be called during the lifetime
-        // of the returned reference. See the documentation on
-        // `deref_mut_slice_helper` for what invariants we are required to
-        // uphold.
+        assert!(B::INTO_REF_INTO_MUT_ARE_SOUND);
+
+        // SAFETY: According to the safety preconditions on
+        // `ByteSlice::INTO_REF_INTO_MUT_ARE_SOUND`, the preceding assert
+        // ensures that, given `B: 'a + ByteSliceMut`, it is sound to drop
+        // `self` and still access the underlying memory using both reads and
+        // writes for `'a`.
         unsafe { self.deref_mut_slice_helper() }
     }
 }
@@ -3353,6 +5129,29 @@ mod sealed {
 pub unsafe trait ByteSlice:
     Deref<Target = [u8]> + Sized + self::sealed::ByteSliceSealed
 {
+    /// Are the [`Ref::into_ref`] and [`Ref::into_mut`] methods sound when used
+    /// with `Self`? If not, evaluating this constant must panic at compile
+    /// time.
+    ///
+    /// This exists to work around #716 on versions of zerocopy prior to 0.8.
+    ///
+    /// # Safety
+    ///
+    /// This may only be set to true if the following holds: Given the
+    /// following:
+    /// - `Self: 'a`
+    /// - `bytes: Self`
+    /// - `let ptr = bytes.as_ptr()`
+    ///
+    /// ...then:
+    /// - Using `ptr` to read the memory previously addressed by `bytes` is
+    ///   sound for `'a` even after `bytes` has been dropped.
+    /// - If `Self: ByteSliceMut`, using `ptr` to write the memory previously
+    ///   addressed by `bytes` is sound for `'a` even after `bytes` has been
+    ///   dropped.
+    #[doc(hidden)]
+    const INTO_REF_INTO_MUT_ARE_SOUND: bool;
+
     /// Gets a raw pointer to the first byte in the slice.
     #[inline]
     fn as_ptr(&self) -> *const u8 {
@@ -3387,6 +5186,10 @@ impl<'a> sealed::ByteSliceSealed for &'a [u8] {}
 // TODO(#429): Add a "SAFETY" comment and remove this `allow`.
 #[allow(clippy::undocumented_unsafe_blocks)]
 unsafe impl<'a> ByteSlice for &'a [u8] {
+    // SAFETY: If `&'b [u8]: 'a`, then the underlying memory is treated as
+    // borrowed immutably for `'a` even if the slice itself is dropped.
+    const INTO_REF_INTO_MUT_ARE_SOUND: bool = true;
+
     #[inline]
     fn split_at(self, mid: usize) -> (Self, Self) {
         <[u8]>::split_at(self, mid)
@@ -3397,6 +5200,10 @@ impl<'a> sealed::ByteSliceSealed for &'a mut [u8] {}
 // TODO(#429): Add a "SAFETY" comment and remove this `allow`.
 #[allow(clippy::undocumented_unsafe_blocks)]
 unsafe impl<'a> ByteSlice for &'a mut [u8] {
+    // SAFETY: If `&'b mut [u8]: 'a`, then the underlying memory is treated as
+    // borrowed mutably for `'a` even if the slice itself is dropped.
+    const INTO_REF_INTO_MUT_ARE_SOUND: bool = true;
+
     #[inline]
     fn split_at(self, mid: usize) -> (Self, Self) {
         <[u8]>::split_at_mut(self, mid)
@@ -3407,6 +5214,16 @@ impl<'a> sealed::ByteSliceSealed for cell::Ref<'a, [u8]> {}
 // TODO(#429): Add a "SAFETY" comment and remove this `allow`.
 #[allow(clippy::undocumented_unsafe_blocks)]
 unsafe impl<'a> ByteSlice for cell::Ref<'a, [u8]> {
+    const INTO_REF_INTO_MUT_ARE_SOUND: bool = if !cfg!(doc) {
+        panic!("Ref::into_ref and Ref::into_mut are unsound when used with core::cell::Ref; see https://github.com/google/zerocopy/issues/716")
+    } else {
+        // When compiling documentation, allow the evaluation of this constant
+        // to succeed. This doesn't represent a soundness hole - it just delays
+        // any error to runtime. The reason we need this is that, otherwise,
+        // `rustdoc` will fail when trying to document this item.
+        false
+    };
+
     #[inline]
     fn split_at(self, mid: usize) -> (Self, Self) {
         cell::Ref::map_split(self, |slice| <[u8]>::split_at(slice, mid))
@@ -3417,6 +5234,16 @@ impl<'a> sealed::ByteSliceSealed for RefMut<'a, [u8]> {}
 // TODO(#429): Add a "SAFETY" comment and remove this `allow`.
 #[allow(clippy::undocumented_unsafe_blocks)]
 unsafe impl<'a> ByteSlice for RefMut<'a, [u8]> {
+    const INTO_REF_INTO_MUT_ARE_SOUND: bool = if !cfg!(doc) {
+        panic!("Ref::into_ref and Ref::into_mut are unsound when used with core::cell::RefMut; see https://github.com/google/zerocopy/issues/716")
+    } else {
+        // When compiling documentation, allow the evaluation of this constant
+        // to succeed. This doesn't represent a soundness hole - it just delays
+        // any error to runtime. The reason we need this is that, otherwise,
+        // `rustdoc` will fail when trying to document this item.
+        false
+    };
+
     #[inline]
     fn split_at(self, mid: usize) -> (Self, Self) {
         RefMut::map_split(self, |slice| <[u8]>::split_at_mut(slice, mid))
@@ -3432,6 +5259,7 @@ unsafe impl<'a> ByteSliceMut for &'a mut [u8] {}
 unsafe impl<'a> ByteSliceMut for RefMut<'a, [u8]> {}
 
 #[cfg(feature = "alloc")]
+#[cfg_attr(doc_cfg, doc(cfg(feature = "alloc")))]
 mod alloc_support {
     use alloc::vec::Vec;
 
@@ -3656,7 +5484,7 @@ pub use alloc_support::*;
 mod tests {
     #![allow(clippy::unreadable_literal)]
 
-    use core::{convert::TryInto as _, ops::Deref};
+    use core::{cell::UnsafeCell, convert::TryInto as _, ops::Deref};
 
     use static_assertions::assert_impl_all;
 
@@ -3684,12 +5512,196 @@ mod tests {
         }
     }
 
+    /// Tests of when a sized `DstLayout` is extended with a sized field.
+    #[allow(clippy::decimal_literal_representation)]
+    #[test]
+    fn test_dst_layout_extend_sized_with_sized() {
+        // This macro constructs a layout corresponding to a `u8` and extends it
+        // with a zero-sized trailing field of given alignment `n`. The macro
+        // tests that the resulting layout has both size and alignment `min(n,
+        // P)` for all valid values of `repr(packed(P))`.
+        macro_rules! test_align_is_size {
+            ($n:expr) => {
+                let base = DstLayout::for_type::<u8>();
+                let trailing_field = DstLayout::for_type::<elain::Align<$n>>();
+
+                let packs =
+                    core::iter::once(None).chain((0..29).map(|p| NonZeroUsize::new(2usize.pow(p))));
+
+                for pack in packs {
+                    let composite = base.extend(trailing_field, pack);
+                    let max_align = pack.unwrap_or(DstLayout::CURRENT_MAX_ALIGN);
+                    let align = $n.min(max_align.get());
+                    assert_eq!(
+                        composite,
+                        DstLayout {
+                            align: NonZeroUsize::new(align).unwrap(),
+                            size_info: SizeInfo::Sized { _size: align }
+                        }
+                    )
+                }
+            };
+        }
+
+        test_align_is_size!(1);
+        test_align_is_size!(2);
+        test_align_is_size!(4);
+        test_align_is_size!(8);
+        test_align_is_size!(16);
+        test_align_is_size!(32);
+        test_align_is_size!(64);
+        test_align_is_size!(128);
+        test_align_is_size!(256);
+        test_align_is_size!(512);
+        test_align_is_size!(1024);
+        test_align_is_size!(2048);
+        test_align_is_size!(4096);
+        test_align_is_size!(8192);
+        test_align_is_size!(16384);
+        test_align_is_size!(32768);
+        test_align_is_size!(65536);
+        test_align_is_size!(131072);
+        test_align_is_size!(262144);
+        test_align_is_size!(524288);
+        test_align_is_size!(1048576);
+        test_align_is_size!(2097152);
+        test_align_is_size!(4194304);
+        test_align_is_size!(8388608);
+        test_align_is_size!(16777216);
+        test_align_is_size!(33554432);
+        test_align_is_size!(67108864);
+        test_align_is_size!(33554432);
+        test_align_is_size!(134217728);
+        test_align_is_size!(268435456);
+    }
+
+    /// Tests of when a sized `DstLayout` is extended with a DST field.
+    #[test]
+    fn test_dst_layout_extend_sized_with_dst() {
+        // Test that for all combinations of real-world alignments and
+        // `repr_packed` values, that the extension of a sized `DstLayout`` with
+        // a DST field correctly computes the trailing offset in the composite
+        // layout.
+
+        let aligns = (0..29).map(|p| NonZeroUsize::new(2usize.pow(p)).unwrap());
+        let packs = core::iter::once(None).chain(aligns.clone().map(Some));
+
+        for align in aligns {
+            for pack in packs.clone() {
+                let base = DstLayout::for_type::<u8>();
+                let elem_size = 42;
+                let trailing_field_offset = 11;
+
+                let trailing_field = DstLayout {
+                    align,
+                    size_info: SizeInfo::SliceDst(TrailingSliceLayout {
+                        _elem_size: elem_size,
+                        _offset: 11,
+                    }),
+                };
+
+                let composite = base.extend(trailing_field, pack);
+
+                let max_align = pack.unwrap_or(DstLayout::CURRENT_MAX_ALIGN).get();
+
+                let align = align.get().min(max_align);
+
+                assert_eq!(
+                    composite,
+                    DstLayout {
+                        align: NonZeroUsize::new(align).unwrap(),
+                        size_info: SizeInfo::SliceDst(TrailingSliceLayout {
+                            _elem_size: elem_size,
+                            _offset: align + trailing_field_offset,
+                        }),
+                    }
+                )
+            }
+        }
+    }
+
+    /// Tests that calling `pad_to_align` on a sized `DstLayout` adds the
+    /// expected amount of trailing padding.
+    #[test]
+    fn test_dst_layout_pad_to_align_with_sized() {
+        // For all valid alignments `align`, construct a one-byte layout aligned
+        // to `align`, call `pad_to_align`, and assert that the size of the
+        // resulting layout is equal to `align`.
+        for align in (0..29).map(|p| NonZeroUsize::new(2usize.pow(p)).unwrap()) {
+            let layout = DstLayout { align, size_info: SizeInfo::Sized { _size: 1 } };
+
+            assert_eq!(
+                layout.pad_to_align(),
+                DstLayout { align, size_info: SizeInfo::Sized { _size: align.get() } }
+            );
+        }
+
+        // Test explicitly-provided combinations of unpadded and padded
+        // counterparts.
+
+        macro_rules! test {
+            (unpadded { size: $unpadded_size:expr, align: $unpadded_align:expr }
+                => padded { size: $padded_size:expr, align: $padded_align:expr }) => {
+                let unpadded = DstLayout {
+                    align: NonZeroUsize::new($unpadded_align).unwrap(),
+                    size_info: SizeInfo::Sized { _size: $unpadded_size },
+                };
+                let padded = unpadded.pad_to_align();
+
+                assert_eq!(
+                    padded,
+                    DstLayout {
+                        align: NonZeroUsize::new($padded_align).unwrap(),
+                        size_info: SizeInfo::Sized { _size: $padded_size },
+                    }
+                );
+            };
+        }
+
+        test!(unpadded { size: 0, align: 4 } => padded { size: 0, align: 4 });
+        test!(unpadded { size: 1, align: 4 } => padded { size: 4, align: 4 });
+        test!(unpadded { size: 2, align: 4 } => padded { size: 4, align: 4 });
+        test!(unpadded { size: 3, align: 4 } => padded { size: 4, align: 4 });
+        test!(unpadded { size: 4, align: 4 } => padded { size: 4, align: 4 });
+        test!(unpadded { size: 5, align: 4 } => padded { size: 8, align: 4 });
+        test!(unpadded { size: 6, align: 4 } => padded { size: 8, align: 4 });
+        test!(unpadded { size: 7, align: 4 } => padded { size: 8, align: 4 });
+        test!(unpadded { size: 8, align: 4 } => padded { size: 8, align: 4 });
+
+        let current_max_align = DstLayout::CURRENT_MAX_ALIGN.get();
+
+        test!(unpadded { size: 1, align: current_max_align }
+            => padded { size: current_max_align, align: current_max_align });
+
+        test!(unpadded { size: current_max_align + 1, align: current_max_align }
+            => padded { size: current_max_align * 2, align: current_max_align });
+    }
+
+    /// Tests that calling `pad_to_align` on a DST `DstLayout` is a no-op.
+    #[test]
+    fn test_dst_layout_pad_to_align_with_dst() {
+        for align in (0..29).map(|p| NonZeroUsize::new(2usize.pow(p)).unwrap()) {
+            for offset in 0..10 {
+                for elem_size in 0..10 {
+                    let layout = DstLayout {
+                        align,
+                        size_info: SizeInfo::SliceDst(TrailingSliceLayout {
+                            _offset: offset,
+                            _elem_size: elem_size,
+                        }),
+                    };
+                    assert_eq!(layout.pad_to_align(), layout);
+                }
+            }
+        }
+    }
+
     // This test takes a long time when running under Miri, so we skip it in
     // that case. This is acceptable because this is a logic test that doesn't
     // attempt to expose UB.
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn test_validate_cast_and_convert_metadata() {
+    fn testvalidate_cast_and_convert_metadata() {
         impl From<usize> for SizeInfo {
             fn from(_size: usize) -> SizeInfo {
                 SizeInfo::Sized { _size }
@@ -3703,7 +5715,7 @@ mod tests {
         }
 
         fn layout<S: Into<SizeInfo>>(s: S, align: usize) -> DstLayout {
-            DstLayout { _size_info: s.into(), _align: NonZeroUsize::new(align).unwrap() }
+            DstLayout { size_info: s.into(), align: NonZeroUsize::new(align).unwrap() }
         }
 
         /// This macro accepts arguments in the form of:
@@ -3766,7 +5778,7 @@ mod tests {
                     // addition to the previous line.
                     std::panic::set_hook(Box::new(|_| {}));
                     let actual = std::panic::catch_unwind(|| {
-                        layout(size_info, align)._validate_cast_and_convert_metadata(addr, bytes_len, cast_type)
+                        layout(size_info, align).validate_cast_and_convert_metadata(addr, bytes_len, cast_type)
                     }).map_err(|d| {
                         *d.downcast::<&'static str>().expect("expected string panic message").as_ref()
                     });
@@ -3865,9 +5877,9 @@ mod tests {
             (layout, addr, bytes_len, cast_type): (DstLayout, usize, usize, _CastType),
         ) {
             if let Some((elems, split_at)) =
-                layout._validate_cast_and_convert_metadata(addr, bytes_len, cast_type)
+                layout.validate_cast_and_convert_metadata(addr, bytes_len, cast_type)
             {
-                let (size_info, align) = (layout._size_info, layout._align);
+                let (size_info, align) = (layout.size_info, layout.align);
                 let debug_str = format!(
                     "layout({size_info:?}, {align}).validate_cast_and_convert_metadata({addr}, {bytes_len}, {cast_type:?}) => ({elems}, {split_at})",
                 );
@@ -3876,10 +5888,10 @@ mod tests {
                 // meaningless, but in practice we set it to 0. Callers are not
                 // allowed to rely on this, but a lot of math is nicer if
                 // they're able to, and some callers might accidentally do that.
-                let sized = matches!(layout._size_info, SizeInfo::Sized { .. });
+                let sized = matches!(layout.size_info, SizeInfo::Sized { .. });
                 assert!(!(sized && elems != 0), "{}", debug_str);
 
-                let resulting_size = match layout._size_info {
+                let resulting_size = match layout.size_info {
                     SizeInfo::Sized { _size } => _size,
                     SizeInfo::SliceDst(TrailingSliceLayout {
                         _offset: offset,
@@ -3888,7 +5900,7 @@ mod tests {
                         let padded_size = |elems| {
                             let without_padding = offset + elems * elem_size;
                             without_padding
-                                + util::core_layout::_padding_needed_for(without_padding, align)
+                                + util::core_layout::padding_needed_for(without_padding, align)
                         };
 
                         let resulting_size = padded_size(elems);
@@ -3914,10 +5926,10 @@ mod tests {
                     }
                 }
             } else {
-                let min_size = match layout._size_info {
+                let min_size = match layout.size_info {
                     SizeInfo::Sized { _size } => _size,
                     SizeInfo::SliceDst(TrailingSliceLayout { _offset, .. }) => {
-                        _offset + util::core_layout::_padding_needed_for(_offset, layout._align)
+                        _offset + util::core_layout::padding_needed_for(_offset, layout.align)
                     }
                 };
 
@@ -3929,7 +5941,7 @@ mod tests {
                     _CastType::_Prefix => 0,
                     _CastType::_Suffix => bytes_len,
                 };
-                let misaligned = (base + addr) % layout._align != 0;
+                let misaligned = (base + addr) % layout.align != 0;
 
                 assert!(insufficient_bytes || misaligned);
             }
@@ -3995,10 +6007,10 @@ mod tests {
                         // ...then Rust will automatically round the type's size
                         // up to 2.
                         _size: args.offset
-                            + util::core_layout::_padding_needed_for(args.offset, args.align),
+                            + util::core_layout::padding_needed_for(args.offset, args.align),
                     },
                 };
-                DstLayout { _size_info: size_info, _align: args.align }
+                DstLayout { size_info, align: args.align }
             };
 
             for elems in 0..128 {
@@ -4044,7 +6056,7 @@ mod tests {
                 //   `offset + elem_size * elems` rounded up to the next
                 //   alignment.
                 let expected_size = without_padding
-                    + util::core_layout::_padding_needed_for(without_padding, args.align);
+                    + util::core_layout::padding_needed_for(without_padding, args.align);
                 assert_eq!(expected_size, size, "{}", assert_msg);
 
                 // For zero-sized element types,
@@ -4053,7 +6065,7 @@ mod tests {
                 if args.elem_size.map(|elem_size| elem_size > 0).unwrap_or(true) {
                     let addr = ptr.addr().get();
                     let (got_elems, got_split_at) = layout
-                        ._validate_cast_and_convert_metadata(addr, size, _CastType::_Prefix)
+                        .validate_cast_and_convert_metadata(addr, size, _CastType::_Prefix)
                         .unwrap();
                     // Avoid expensive allocation when running under Miri.
                     let assert_msg = if !cfg!(miri) {
@@ -4312,8 +6324,8 @@ mod tests {
         }
 
         let layout = |offset, align, _trailing_slice_elem_size| DstLayout {
-            _align: NonZeroUsize::new(align).unwrap(),
-            _size_info: match _trailing_slice_elem_size {
+            align: NonZeroUsize::new(align).unwrap(),
+            size_info: match _trailing_slice_elem_size {
                 None => SizeInfo::Sized { _size: offset },
                 Some(elem_size) => SizeInfo::SliceDst(TrailingSliceLayout {
                     _offset: offset,
@@ -4334,6 +6346,390 @@ mod tests {
         test!([()], layout(0, 1, Some(0)));
         test!([u8], layout(0, 1, Some(1)));
         test!(str, layout(0, 1, Some(1)));
+    }
+
+    #[cfg(feature = "derive")]
+    #[test]
+    fn test_known_layout_derive() {
+        // In this and other files (`late_compile_pass.rs`,
+        // `mid_compile_pass.rs`, and `struct.rs`), we test success and failure
+        // modes of `derive(KnownLayout)` for the following combination of
+        // properties:
+        //
+        // +------------+--------------------------------------+-----------+
+        // |            |      trailing field properties       |           |
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |------------+----------+----------------+----------+-----------|
+        // |          N |        N |              N |        N |      KL00 |
+        // |          N |        N |              N |        Y |      KL01 |
+        // |          N |        N |              Y |        N |      KL02 |
+        // |          N |        N |              Y |        Y |      KL03 |
+        // |          N |        Y |              N |        N |      KL04 |
+        // |          N |        Y |              N |        Y |      KL05 |
+        // |          N |        Y |              Y |        N |      KL06 |
+        // |          N |        Y |              Y |        Y |      KL07 |
+        // |          Y |        N |              N |        N |      KL08 |
+        // |          Y |        N |              N |        Y |      KL09 |
+        // |          Y |        N |              Y |        N |      KL10 |
+        // |          Y |        N |              Y |        Y |      KL11 |
+        // |          Y |        Y |              N |        N |      KL12 |
+        // |          Y |        Y |              N |        Y |      KL13 |
+        // |          Y |        Y |              Y |        N |      KL14 |
+        // |          Y |        Y |              Y |        Y |      KL15 |
+        // +------------+----------+----------------+----------+-----------+
+
+        struct NotKnownLayout<T = ()> {
+            _t: T,
+        }
+
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct AlignSize<const ALIGN: usize, const SIZE: usize>
+        where
+            elain::Align<ALIGN>: elain::Alignment,
+        {
+            _align: elain::Align<ALIGN>,
+            _size: [u8; SIZE],
+        }
+
+        type AU16 = AlignSize<2, 2>;
+        type AU32 = AlignSize<4, 4>;
+
+        fn _assert_kl<T: ?Sized + KnownLayout>(_: &T) {}
+
+        let sized_layout = |align, size| DstLayout {
+            align: NonZeroUsize::new(align).unwrap(),
+            size_info: SizeInfo::Sized { _size: size },
+        };
+
+        let unsized_layout = |align, elem_size, offset| DstLayout {
+            align: NonZeroUsize::new(align).unwrap(),
+            size_info: SizeInfo::SliceDst(TrailingSliceLayout {
+                _offset: offset,
+                _elem_size: elem_size,
+            }),
+        };
+
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |          N |        N |              N |        Y |      KL01 |
+        #[derive(KnownLayout)]
+        struct KL01(NotKnownLayout<AU32>, NotKnownLayout<AU16>);
+
+        let expected = DstLayout::for_type::<KL01>();
+
+        assert_eq!(<KL01 as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL01 as KnownLayout>::LAYOUT, sized_layout(4, 8));
+
+        // ...with `align(N)`:
+        #[derive(KnownLayout)]
+        #[repr(align(64))]
+        struct KL01Align(NotKnownLayout<AU32>, NotKnownLayout<AU16>);
+
+        let expected = DstLayout::for_type::<KL01Align>();
+
+        assert_eq!(<KL01Align as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL01Align as KnownLayout>::LAYOUT, sized_layout(64, 64));
+
+        // ...with `packed`:
+        #[derive(KnownLayout)]
+        #[repr(packed)]
+        struct KL01Packed(NotKnownLayout<AU32>, NotKnownLayout<AU16>);
+
+        let expected = DstLayout::for_type::<KL01Packed>();
+
+        assert_eq!(<KL01Packed as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL01Packed as KnownLayout>::LAYOUT, sized_layout(1, 6));
+
+        // ...with `packed(N)`:
+        #[derive(KnownLayout)]
+        #[repr(packed(2))]
+        struct KL01PackedN(NotKnownLayout<AU32>, NotKnownLayout<AU16>);
+
+        assert_impl_all!(KL01PackedN: KnownLayout);
+
+        let expected = DstLayout::for_type::<KL01PackedN>();
+
+        assert_eq!(<KL01PackedN as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL01PackedN as KnownLayout>::LAYOUT, sized_layout(2, 6));
+
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |          N |        N |              Y |        Y |      KL03 |
+        #[derive(KnownLayout)]
+        struct KL03(NotKnownLayout, u8);
+
+        let expected = DstLayout::for_type::<KL03>();
+
+        assert_eq!(<KL03 as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL03 as KnownLayout>::LAYOUT, sized_layout(1, 1));
+
+        // ... with `align(N)`
+        #[derive(KnownLayout)]
+        #[repr(align(64))]
+        struct KL03Align(NotKnownLayout<AU32>, u8);
+
+        let expected = DstLayout::for_type::<KL03Align>();
+
+        assert_eq!(<KL03Align as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL03Align as KnownLayout>::LAYOUT, sized_layout(64, 64));
+
+        // ... with `packed`:
+        #[derive(KnownLayout)]
+        #[repr(packed)]
+        struct KL03Packed(NotKnownLayout<AU32>, u8);
+
+        let expected = DstLayout::for_type::<KL03Packed>();
+
+        assert_eq!(<KL03Packed as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL03Packed as KnownLayout>::LAYOUT, sized_layout(1, 5));
+
+        // ... with `packed(N)`
+        #[derive(KnownLayout)]
+        #[repr(packed(2))]
+        struct KL03PackedN(NotKnownLayout<AU32>, u8);
+
+        assert_impl_all!(KL03PackedN: KnownLayout);
+
+        let expected = DstLayout::for_type::<KL03PackedN>();
+
+        assert_eq!(<KL03PackedN as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL03PackedN as KnownLayout>::LAYOUT, sized_layout(2, 6));
+
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |          N |        Y |              N |        Y |      KL05 |
+        #[derive(KnownLayout)]
+        struct KL05<T>(u8, T);
+
+        fn _test_kl05<T>(t: T) -> impl KnownLayout {
+            KL05(0u8, t)
+        }
+
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |          N |        Y |              Y |        Y |      KL07 |
+        #[derive(KnownLayout)]
+        struct KL07<T: KnownLayout>(u8, T);
+
+        fn _test_kl07<T: KnownLayout>(t: T) -> impl KnownLayout {
+            let _ = KL07(0u8, t);
+        }
+
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |          Y |        N |              Y |        N |      KL10 |
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KL10(NotKnownLayout<AU32>, [u8]);
+
+        let expected = DstLayout::new_zst(None)
+            .extend(DstLayout::for_type::<NotKnownLayout<AU32>>(), None)
+            .extend(<[u8] as KnownLayout>::LAYOUT, None)
+            .pad_to_align();
+
+        assert_eq!(<KL10 as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL10 as KnownLayout>::LAYOUT, unsized_layout(4, 1, 4));
+
+        // ...with `align(N)`:
+        #[derive(KnownLayout)]
+        #[repr(C, align(64))]
+        struct KL10Align(NotKnownLayout<AU32>, [u8]);
+
+        let repr_align = NonZeroUsize::new(64);
+
+        let expected = DstLayout::new_zst(repr_align)
+            .extend(DstLayout::for_type::<NotKnownLayout<AU32>>(), None)
+            .extend(<[u8] as KnownLayout>::LAYOUT, None)
+            .pad_to_align();
+
+        assert_eq!(<KL10Align as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL10Align as KnownLayout>::LAYOUT, unsized_layout(64, 1, 4));
+
+        // ...with `packed`:
+        #[derive(KnownLayout)]
+        #[repr(C, packed)]
+        struct KL10Packed(NotKnownLayout<AU32>, [u8]);
+
+        let repr_packed = NonZeroUsize::new(1);
+
+        let expected = DstLayout::new_zst(None)
+            .extend(DstLayout::for_type::<NotKnownLayout<AU32>>(), repr_packed)
+            .extend(<[u8] as KnownLayout>::LAYOUT, repr_packed)
+            .pad_to_align();
+
+        assert_eq!(<KL10Packed as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL10Packed as KnownLayout>::LAYOUT, unsized_layout(1, 1, 4));
+
+        // ...with `packed(N)`:
+        #[derive(KnownLayout)]
+        #[repr(C, packed(2))]
+        struct KL10PackedN(NotKnownLayout<AU32>, [u8]);
+
+        let repr_packed = NonZeroUsize::new(2);
+
+        let expected = DstLayout::new_zst(None)
+            .extend(DstLayout::for_type::<NotKnownLayout<AU32>>(), repr_packed)
+            .extend(<[u8] as KnownLayout>::LAYOUT, repr_packed)
+            .pad_to_align();
+
+        assert_eq!(<KL10PackedN as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL10PackedN as KnownLayout>::LAYOUT, unsized_layout(2, 1, 4));
+
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |          Y |        N |              Y |        Y |      KL11 |
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KL11(NotKnownLayout<AU64>, u8);
+
+        let expected = DstLayout::new_zst(None)
+            .extend(DstLayout::for_type::<NotKnownLayout<AU64>>(), None)
+            .extend(<u8 as KnownLayout>::LAYOUT, None)
+            .pad_to_align();
+
+        assert_eq!(<KL11 as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL11 as KnownLayout>::LAYOUT, sized_layout(8, 16));
+
+        // ...with `align(N)`:
+        #[derive(KnownLayout)]
+        #[repr(C, align(64))]
+        struct KL11Align(NotKnownLayout<AU64>, u8);
+
+        let repr_align = NonZeroUsize::new(64);
+
+        let expected = DstLayout::new_zst(repr_align)
+            .extend(DstLayout::for_type::<NotKnownLayout<AU64>>(), None)
+            .extend(<u8 as KnownLayout>::LAYOUT, None)
+            .pad_to_align();
+
+        assert_eq!(<KL11Align as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL11Align as KnownLayout>::LAYOUT, sized_layout(64, 64));
+
+        // ...with `packed`:
+        #[derive(KnownLayout)]
+        #[repr(C, packed)]
+        struct KL11Packed(NotKnownLayout<AU64>, u8);
+
+        let repr_packed = NonZeroUsize::new(1);
+
+        let expected = DstLayout::new_zst(None)
+            .extend(DstLayout::for_type::<NotKnownLayout<AU64>>(), repr_packed)
+            .extend(<u8 as KnownLayout>::LAYOUT, repr_packed)
+            .pad_to_align();
+
+        assert_eq!(<KL11Packed as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL11Packed as KnownLayout>::LAYOUT, sized_layout(1, 9));
+
+        // ...with `packed(N)`:
+        #[derive(KnownLayout)]
+        #[repr(C, packed(2))]
+        struct KL11PackedN(NotKnownLayout<AU64>, u8);
+
+        let repr_packed = NonZeroUsize::new(2);
+
+        let expected = DstLayout::new_zst(None)
+            .extend(DstLayout::for_type::<NotKnownLayout<AU64>>(), repr_packed)
+            .extend(<u8 as KnownLayout>::LAYOUT, repr_packed)
+            .pad_to_align();
+
+        assert_eq!(<KL11PackedN as KnownLayout>::LAYOUT, expected);
+        assert_eq!(<KL11PackedN as KnownLayout>::LAYOUT, sized_layout(2, 10));
+
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |          Y |        Y |              Y |        N |      KL14 |
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KL14<T: ?Sized + KnownLayout>(u8, T);
+
+        fn _test_kl14<T: ?Sized + KnownLayout>(kl: &KL14<T>) {
+            _assert_kl(kl)
+        }
+
+        // | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+        // |          Y |        Y |              Y |        Y |      KL15 |
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KL15<T: KnownLayout>(u8, T);
+
+        fn _test_kl15<T: KnownLayout>(t: T) -> impl KnownLayout {
+            let _ = KL15(0u8, t);
+        }
+
+        // Test a variety of combinations of field types:
+        //  - ()
+        //  - u8
+        //  - AU16
+        //  - [()]
+        //  - [u8]
+        //  - [AU16]
+
+        #[allow(clippy::upper_case_acronyms)]
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KLTU<T, U: ?Sized>(T, U);
+
+        assert_eq!(<KLTU<(), ()> as KnownLayout>::LAYOUT, sized_layout(1, 0));
+
+        assert_eq!(<KLTU<(), u8> as KnownLayout>::LAYOUT, sized_layout(1, 1));
+
+        assert_eq!(<KLTU<(), AU16> as KnownLayout>::LAYOUT, sized_layout(2, 2));
+
+        assert_eq!(<KLTU<(), [()]> as KnownLayout>::LAYOUT, unsized_layout(1, 0, 0));
+
+        assert_eq!(<KLTU<(), [u8]> as KnownLayout>::LAYOUT, unsized_layout(1, 1, 0));
+
+        assert_eq!(<KLTU<(), [AU16]> as KnownLayout>::LAYOUT, unsized_layout(2, 2, 0));
+
+        assert_eq!(<KLTU<u8, ()> as KnownLayout>::LAYOUT, sized_layout(1, 1));
+
+        assert_eq!(<KLTU<u8, u8> as KnownLayout>::LAYOUT, sized_layout(1, 2));
+
+        assert_eq!(<KLTU<u8, AU16> as KnownLayout>::LAYOUT, sized_layout(2, 4));
+
+        assert_eq!(<KLTU<u8, [()]> as KnownLayout>::LAYOUT, unsized_layout(1, 0, 1));
+
+        assert_eq!(<KLTU<u8, [u8]> as KnownLayout>::LAYOUT, unsized_layout(1, 1, 1));
+
+        assert_eq!(<KLTU<u8, [AU16]> as KnownLayout>::LAYOUT, unsized_layout(2, 2, 2));
+
+        assert_eq!(<KLTU<AU16, ()> as KnownLayout>::LAYOUT, sized_layout(2, 2));
+
+        assert_eq!(<KLTU<AU16, u8> as KnownLayout>::LAYOUT, sized_layout(2, 4));
+
+        assert_eq!(<KLTU<AU16, AU16> as KnownLayout>::LAYOUT, sized_layout(2, 4));
+
+        assert_eq!(<KLTU<AU16, [()]> as KnownLayout>::LAYOUT, unsized_layout(2, 0, 2));
+
+        assert_eq!(<KLTU<AU16, [u8]> as KnownLayout>::LAYOUT, unsized_layout(2, 1, 2));
+
+        assert_eq!(<KLTU<AU16, [AU16]> as KnownLayout>::LAYOUT, unsized_layout(2, 2, 2));
+
+        // Test a variety of field counts.
+
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KLF0;
+
+        assert_eq!(<KLF0 as KnownLayout>::LAYOUT, sized_layout(1, 0));
+
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KLF1([u8]);
+
+        assert_eq!(<KLF1 as KnownLayout>::LAYOUT, unsized_layout(1, 1, 0));
+
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KLF2(NotKnownLayout<u8>, [u8]);
+
+        assert_eq!(<KLF2 as KnownLayout>::LAYOUT, unsized_layout(1, 1, 1));
+
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KLF3(NotKnownLayout<u8>, NotKnownLayout<AU16>, [u8]);
+
+        assert_eq!(<KLF3 as KnownLayout>::LAYOUT, unsized_layout(2, 1, 4));
+
+        #[derive(KnownLayout)]
+        #[repr(C)]
+        struct KLF4(NotKnownLayout<u8>, NotKnownLayout<AU16>, NotKnownLayout<AU32>, [u8]);
+
+        assert_eq!(<KLF4 as KnownLayout>::LAYOUT, unsized_layout(4, 1, 8));
     }
 
     #[test]
@@ -5280,9 +7676,152 @@ mod tests {
 
     #[test]
     fn test_impls() {
+        use core::borrow::Borrow;
+
+        // A type that can supply test cases for testing
+        // `TryFromBytes::is_bit_valid`. All types passed to `assert_impls!`
+        // must implement this trait; that macro uses it to generate runtime
+        // tests for `TryFromBytes` impls.
+        //
+        // All `T: FromBytes` types are provided with a blanket impl. Other
+        // types must implement `TryFromBytesTestable` directly (ie using
+        // `impl_try_from_bytes_testable!`).
+        trait TryFromBytesTestable {
+            fn with_passing_test_cases<F: Fn(&Self)>(f: F);
+            fn with_failing_test_cases<F: Fn(&[u8])>(f: F);
+        }
+
+        impl<T: FromBytes> TryFromBytesTestable for T {
+            fn with_passing_test_cases<F: Fn(&Self)>(f: F) {
+                // Test with a zeroed value.
+                f(&Self::new_zeroed());
+
+                let ffs = {
+                    let mut t = Self::new_zeroed();
+                    let ptr: *mut T = &mut t;
+                    // SAFETY: `T: FromBytes`
+                    unsafe { ptr::write_bytes(ptr.cast::<u8>(), 0xFF, mem::size_of::<T>()) };
+                    t
+                };
+
+                // Test with a value initialized with 0xFF.
+                f(&ffs);
+            }
+
+            fn with_failing_test_cases<F: Fn(&[u8])>(_f: F) {}
+        }
+
+        // Implements `TryFromBytesTestable`.
+        macro_rules! impl_try_from_bytes_testable {
+            // Base case for recursion (when the list of types has run out).
+            (=> @success $($success_case:expr),* $(, @failure $($failure_case:expr),*)?) => {};
+            // Implements for type(s) with no type parameters.
+            ($ty:ty $(,$tys:ty)* => @success $($success_case:expr),* $(, @failure $($failure_case:expr),*)?) => {
+                impl TryFromBytesTestable for $ty {
+                    impl_try_from_bytes_testable!(
+                        @methods     @success $($success_case),*
+                                 $(, @failure $($failure_case),*)?
+                    );
+                }
+                impl_try_from_bytes_testable!($($tys),* => @success $($success_case),* $(, @failure $($failure_case),*)?);
+            };
+            // Implements for multiple types with no type parameters.
+            ($($($ty:ty),* => @success $($success_case:expr), * $(, @failure $($failure_case:expr),*)?;)*) => {
+                $(
+                    impl_try_from_bytes_testable!($($ty),* => @success $($success_case),* $(, @failure $($failure_case),*)*);
+                )*
+            };
+            // Implements only the methods; caller must invoke this from inside
+            // an impl block.
+            (@methods @success $($success_case:expr),* $(, @failure $($failure_case:expr),*)?) => {
+                fn with_passing_test_cases<F: Fn(&Self)>(_f: F) {
+                    $(
+                        _f($success_case.borrow());
+                    )*
+                }
+
+                fn with_failing_test_cases<F: Fn(&[u8])>(_f: F) {
+                    $($(
+                        // `unused_qualifications` is spuriously triggered on
+                        // `Option::<Self>::None`.
+                        #[allow(unused_qualifications)]
+                        let case = $failure_case.as_bytes();
+                        _f(case.as_bytes());
+                    )*)?
+                }
+            };
+        }
+
+        // Note that these impls are only for types which are not `FromBytes`.
+        // `FromBytes` types are covered by a preceding blanket impl.
+        impl_try_from_bytes_testable!(
+            bool => @success true, false,
+                    @failure 2u8, 3u8, 0xFFu8;
+            char => @success '\u{0}', '\u{D7FF}', '\u{E000}', '\u{10FFFF}',
+                    @failure 0xD800u32, 0xDFFFu32, 0x110000u32;
+            str  => @success "", "hello", "❤️🧡💛💚💙💜",
+                    @failure [0, 159, 146, 150];
+            [u8] => @success [], [0, 1, 2];
+            NonZeroU8, NonZeroI8, NonZeroU16, NonZeroI16, NonZeroU32,
+            NonZeroI32, NonZeroU64, NonZeroI64, NonZeroU128, NonZeroI128,
+            NonZeroUsize, NonZeroIsize
+                 => @success Self::new(1).unwrap(),
+                    // Doing this instead of `0` ensures that we always satisfy
+                    // the size and alignment requirements of `Self` (whereas
+                    // `0` may be any integer type with a different size or
+                    // alignment than some `NonZeroXxx` types).
+                    @failure Option::<Self>::None;
+            [bool]
+                => @success [true, false], [false, true],
+                    @failure [2u8], [3u8], [0xFFu8], [0u8, 1u8, 2u8];
+        );
+
         // Asserts that `$ty` implements any `$trait` and doesn't implement any
         // `!$trait`. Note that all `$trait`s must come before any `!$trait`s.
+        //
+        // For `T: TryFromBytes`, uses `TryFromBytesTestable` to test success
+        // and failure cases for `TryFromBytes::is_bit_valid`.
         macro_rules! assert_impls {
+            ($ty:ty: TryFromBytes) => {
+                <$ty as TryFromBytesTestable>::with_passing_test_cases(|val| {
+                    let c = Ptr::from(val);
+                    // SAFETY:
+                    // - Since `val` is a normal reference, `c` is guranteed to
+                    //   be aligned, to point to a single allocation, and to
+                    //   have a size which doesn't overflow `isize`.
+                    // - Since `val` is a valid `$ty`, `c`'s referent satisfies
+                    //   the bit validity constraints of `is_bit_valid`, which
+                    //   are a superset of the bit validity constraints of
+                    //   `$ty`.
+                    let res = unsafe { <$ty as TryFromBytes>::is_bit_valid(c) };
+                    assert!(res, "{}::is_bit_valid({:?}): got false, expected true", stringify!($ty), val);
+
+                    // TODO(#5): In addition to testing `is_bit_valid`, test the
+                    // methods built on top of it. This would both allow us to
+                    // test their implementations and actually convert the bytes
+                    // to `$ty`, giving Miri a chance to catch if this is
+                    // unsound (ie, if our `is_bit_valid` impl is buggy).
+                    //
+                    // The following code was tried, but it doesn't work because
+                    // a) some types are not `AsBytes` and, b) some types are
+                    // not `Sized`.
+                    //
+                    //   let r = <$ty as TryFromBytes>::try_from_ref(val.as_bytes()).unwrap();
+                    //   assert_eq!(r, &val);
+                    //   let r = <$ty as TryFromBytes>::try_from_mut(val.as_bytes_mut()).unwrap();
+                    //   assert_eq!(r, &mut val);
+                    //   let v = <$ty as TryFromBytes>::try_read_from(val.as_bytes()).unwrap();
+                    //   assert_eq!(v, val);
+                });
+                #[allow(clippy::as_conversions)]
+                <$ty as TryFromBytesTestable>::with_failing_test_cases(|c| {
+                    let res = <$ty as TryFromBytes>::try_from_ref(c);
+                    assert!(res.is_none(), "{}::is_bit_valid({:?}): got true, expected false", stringify!($ty), c);
+                });
+
+                #[allow(dead_code)]
+                const _: () = { static_assertions::assert_impl_all!($ty: TryFromBytes); };
+            };
             ($ty:ty: $trait:ident) => {
                 #[allow(dead_code)]
                 const _: () = { static_assertions::assert_impl_all!($ty: $trait); };
@@ -5302,78 +7841,118 @@ mod tests {
             };
         }
 
-        assert_impls!((): KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(u8: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(i8: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(u16: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(i16: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(u32: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(i32: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(u64: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(i64: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(u128: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(i128: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(usize: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(isize: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(f32: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(f64: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        // NOTE: The negative impl assertions here are not necessarily
+        // prescriptive. They merely serve as change detectors to make sure
+        // we're aware of what trait impls are getting added with a given
+        // change. Of course, some impls would be invalid (e.g., `bool:
+        // FromBytes`), and so this change detection is very important.
 
-        assert_impls!(bool: KnownLayout, FromZeroes, AsBytes, Unaligned, !FromBytes);
-        assert_impls!(char: KnownLayout, FromZeroes, AsBytes, !FromBytes, !Unaligned);
-        assert_impls!(str: KnownLayout, FromZeroes, AsBytes, Unaligned, !FromBytes);
+        assert_impls!((): KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+        assert_impls!(u8: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+        assert_impls!(i8: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+        assert_impls!(u16: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(i16: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(u32: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(i32: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(u64: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(i64: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(u128: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(i128: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(usize: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(isize: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(f32: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(f64: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
 
-        assert_impls!(NonZeroU8: KnownLayout, AsBytes, Unaligned, !FromZeroes, !FromBytes);
-        assert_impls!(NonZeroI8: KnownLayout, AsBytes, Unaligned, !FromZeroes, !FromBytes);
-        assert_impls!(NonZeroU16: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroI16: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroU32: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroI32: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroU64: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroI64: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroU128: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroI128: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroUsize: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
-        assert_impls!(NonZeroIsize: KnownLayout, AsBytes, !FromZeroes, !FromBytes, !Unaligned);
+        assert_impls!(bool: KnownLayout, TryFromBytes, FromZeroes, AsBytes, Unaligned, !FromBytes);
+        assert_impls!(char: KnownLayout, TryFromBytes, FromZeroes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(str: KnownLayout, TryFromBytes, FromZeroes, AsBytes, Unaligned, !FromBytes);
 
-        assert_impls!(Option<NonZeroU8>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(Option<NonZeroI8>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(Option<NonZeroU16>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroI16>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroU32>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroI32>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroU64>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroI64>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroU128>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroI128>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroUsize>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
-        assert_impls!(Option<NonZeroIsize>: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(NonZeroU8: KnownLayout, TryFromBytes, AsBytes, Unaligned, !FromZeroes, !FromBytes);
+        assert_impls!(NonZeroI8: KnownLayout, TryFromBytes, AsBytes, Unaligned, !FromZeroes, !FromBytes);
+        assert_impls!(NonZeroU16: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroI16: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroU32: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroI32: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroU64: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroI64: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroU128: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroI128: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroUsize: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+        assert_impls!(NonZeroIsize: KnownLayout, TryFromBytes, AsBytes, !FromBytes, !Unaligned);
+
+        assert_impls!(Option<NonZeroU8>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+        assert_impls!(Option<NonZeroI8>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+        assert_impls!(Option<NonZeroU16>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroI16>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroU32>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroI32>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroU64>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroI64>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroU128>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroI128>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroUsize>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
+        assert_impls!(Option<NonZeroIsize>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned);
 
         // Implements none of the ZC traits.
         struct NotZerocopy;
 
-        assert_impls!(PhantomData<NotZerocopy>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(PhantomData<[u8]>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
+        #[rustfmt::skip]
+        type FnManyArgs = fn(
+            NotZerocopy, u8, u8, u8, u8, u8, u8, u8, u8, u8, u8, u8,
+        ) -> (NotZerocopy, NotZerocopy);
 
-        assert_impls!(ManuallyDrop<u8>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(ManuallyDrop<[u8]>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(ManuallyDrop<NotZerocopy>: !KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
-        assert_impls!(ManuallyDrop<[NotZerocopy]>: !KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        // Allowed, because we're not actually using this type for FFI.
+        #[allow(improper_ctypes_definitions)]
+        #[rustfmt::skip]
+        type ECFnManyArgs = extern "C" fn(
+            NotZerocopy, u8, u8, u8, u8, u8, u8, u8, u8, u8, u8, u8,
+        ) -> (NotZerocopy, NotZerocopy);
 
-        assert_impls!(MaybeUninit<u8>: KnownLayout, FromZeroes, FromBytes, Unaligned, !AsBytes);
-        assert_impls!(MaybeUninit<NotZerocopy>: KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        #[cfg(feature = "alloc")]
+        assert_impls!(Option<Box<UnsafeCell<NotZerocopy>>>: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<Box<[UnsafeCell<NotZerocopy>]>>: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<&'static UnsafeCell<NotZerocopy>>: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<&'static [UnsafeCell<NotZerocopy>]>: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<&'static mut UnsafeCell<NotZerocopy>>: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<&'static mut [UnsafeCell<NotZerocopy>]>: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<NonNull<UnsafeCell<NotZerocopy>>>: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<NonNull<[UnsafeCell<NotZerocopy>]>>: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<fn()>: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<FnManyArgs>: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<extern "C" fn()>: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(Option<ECFnManyArgs>: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
 
-        assert_impls!(Wrapping<u8>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(Wrapping<NotZerocopy>: KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(PhantomData<NotZerocopy>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+        assert_impls!(PhantomData<[u8]>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
 
-        assert_impls!(Unalign<u8>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!(Unalign<NotZerocopy>: KnownLayout, Unaligned, !FromZeroes, !FromBytes, !AsBytes);
+        assert_impls!(ManuallyDrop<u8>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned, !TryFromBytes);
+        assert_impls!(ManuallyDrop<[u8]>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned, !TryFromBytes);
+        assert_impls!(ManuallyDrop<NotZerocopy>: !TryFromBytes, !KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(ManuallyDrop<[NotZerocopy]>: !TryFromBytes, !KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
 
-        assert_impls!([u8]: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!([NotZerocopy]: !KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
-        assert_impls!([u8; 0]: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!([NotZerocopy; 0]: KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
-        assert_impls!([u8; 1]: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned);
-        assert_impls!([NotZerocopy; 1]: KnownLayout, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(MaybeUninit<u8>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, Unaligned, !AsBytes);
+        assert_impls!(MaybeUninit<NotZerocopy>: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+
+        assert_impls!(Wrapping<u8>: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+        assert_impls!(Wrapping<NotZerocopy>: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+
+        assert_impls!(Unalign<u8>: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned, !TryFromBytes);
+        assert_impls!(Unalign<NotZerocopy>: Unaligned, !KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes);
+
+        assert_impls!([u8]: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, Unaligned);
+        assert_impls!([bool]: KnownLayout, TryFromBytes, FromZeroes, AsBytes, Unaligned, !FromBytes);
+        assert_impls!([NotZerocopy]: !KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!([u8; 0]: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned, !TryFromBytes);
+        assert_impls!([NotZerocopy; 0]: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!([u8; 1]: KnownLayout, FromZeroes, FromBytes, AsBytes, Unaligned, !TryFromBytes);
+        assert_impls!([NotZerocopy; 1]: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+
+        assert_impls!(*const NotZerocopy: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(*mut NotZerocopy: KnownLayout, FromZeroes, !TryFromBytes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(*const [NotZerocopy]: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(*mut [NotZerocopy]: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(*const dyn Debug: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
+        assert_impls!(*mut dyn Debug: KnownLayout, !TryFromBytes, !FromZeroes, !FromBytes, !AsBytes, !Unaligned);
 
         #[cfg(feature = "simd")]
         {
@@ -5383,7 +7962,7 @@ mod tests {
                     {
                         use core::arch::$arch::{$($typ),*};
                         use crate::*;
-                        $( assert_impls!($typ: KnownLayout, FromZeroes, FromBytes, AsBytes, !Unaligned); )*
+                        $( assert_impls!($typ: KnownLayout, TryFromBytes, FromZeroes, FromBytes, AsBytes, !Unaligned); )*
                     }
                 };
             }
@@ -5433,6 +8012,245 @@ mod tests {
             #[cfg(all(feature = "simd-nightly", target_arch = "arm"))]
             #[rustfmt::skip]
             test_simd_arch_mod!(arm, int8x4_t, uint8x4_t);
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    impl kani::Arbitrary for DstLayout {
+        fn any() -> Self {
+            let align: NonZeroUsize = kani::any();
+            let size_info: SizeInfo = kani::any();
+
+            kani::assume(align.is_power_of_two());
+            kani::assume(align < DstLayout::THEORETICAL_MAX_ALIGN);
+
+            // For testing purposes, we most care about instantiations of
+            // `DstLayout` that can correspond to actual Rust types. We use
+            // `Layout` to verify that our `DstLayout` satisfies the validity
+            // conditions of Rust layouts.
+            kani::assume(
+                match size_info {
+                    SizeInfo::Sized { _size } => Layout::from_size_align(_size, align.get()),
+                    SizeInfo::SliceDst(TrailingSliceLayout { _offset, _elem_size }) => {
+                        // `SliceDst`` cannot encode an exact size, but we know
+                        // it is at least `_offset` bytes.
+                        Layout::from_size_align(_offset, align.get())
+                    }
+                }
+                .is_ok(),
+            );
+
+            Self { align: align, size_info: size_info }
+        }
+    }
+
+    impl kani::Arbitrary for SizeInfo {
+        fn any() -> Self {
+            let is_sized: bool = kani::any();
+
+            match is_sized {
+                true => {
+                    let size: usize = kani::any();
+
+                    kani::assume(size <= isize::MAX as _);
+
+                    SizeInfo::Sized { _size: size }
+                }
+                false => SizeInfo::SliceDst(kani::any()),
+            }
+        }
+    }
+
+    impl kani::Arbitrary for TrailingSliceLayout {
+        fn any() -> Self {
+            let elem_size: usize = kani::any();
+            let offset: usize = kani::any();
+
+            kani::assume(elem_size < isize::MAX as _);
+            kani::assume(offset < isize::MAX as _);
+
+            TrailingSliceLayout { _elem_size: elem_size, _offset: offset }
+        }
+    }
+
+    #[kani::proof]
+    fn prove_dst_layout_extend() {
+        use crate::util::{core_layout::padding_needed_for, max, min};
+
+        let base: DstLayout = kani::any();
+        let field: DstLayout = kani::any();
+        let packed: Option<NonZeroUsize> = kani::any();
+
+        if let Some(max_align) = packed {
+            kani::assume(max_align.is_power_of_two());
+            kani::assume(base.align <= max_align);
+        }
+
+        // The base can only be extended if it's sized.
+        kani::assume(matches!(base.size_info, SizeInfo::Sized { .. }));
+        let base_size = if let SizeInfo::Sized { _size: size } = base.size_info {
+            size
+        } else {
+            unreachable!();
+        };
+
+        // Under the above conditions, `DstLayout::extend` will not panic.
+        let composite = base.extend(field, packed);
+
+        // The field's alignment is clamped by `max_align` (i.e., the
+        // `packed` attribute, if any) [1].
+        //
+        // [1] Per https://doc.rust-lang.org/reference/type-layout.html#the-alignment-modifiers:
+        //
+        //   The alignments of each field, for the purpose of positioning
+        //   fields, is the smaller of the specified alignment and the
+        //   alignment of the field's type.
+        let field_align = min(field.align, packed.unwrap_or(DstLayout::THEORETICAL_MAX_ALIGN));
+
+        // The struct's alignment is the maximum of its previous alignment and
+        // `field_align`.
+        assert_eq!(composite.align, max(base.align, field_align));
+
+        // Compute the minimum amount of inter-field padding needed to
+        // satisfy the field's alignment, and offset of the trailing field.
+        // [1]
+        //
+        // [1] Per https://doc.rust-lang.org/reference/type-layout.html#the-alignment-modifiers:
+        //
+        //   Inter-field padding is guaranteed to be the minimum required in
+        //   order to satisfy each field's (possibly altered) alignment.
+        let padding = padding_needed_for(base_size, field_align);
+        let offset = base_size + padding;
+
+        // For testing purposes, we'll also construct `alloc::Layout`
+        // stand-ins for `DstLayout`, and show that `extend` behaves
+        // comparably on both types.
+        let base_analog = Layout::from_size_align(base_size, base.align.get()).unwrap();
+
+        match field.size_info {
+            SizeInfo::Sized { _size: field_size } => {
+                if let SizeInfo::Sized { _size: composite_size } = composite.size_info {
+                    // If the trailing field is sized, the resulting layout
+                    // will be sized. Its size will be the sum of the
+                    // preceeding layout, the size of the new field, and the
+                    // size of inter-field padding between the two.
+                    assert_eq!(composite_size, offset + field_size);
+
+                    let field_analog =
+                        Layout::from_size_align(field_size, field_align.get()).unwrap();
+
+                    if let Ok((actual_composite, actual_offset)) = base_analog.extend(field_analog)
+                    {
+                        assert_eq!(actual_offset, offset);
+                        assert_eq!(actual_composite.size(), composite_size);
+                        assert_eq!(actual_composite.align(), composite.align.get());
+                    } else {
+                        // An error here reflects that composite of `base`
+                        // and `field` cannot correspond to a real Rust type
+                        // fragment, because such a fragment would violate
+                        // the basic invariants of a valid Rust layout. At
+                        // the time of writing, `DstLayout` is a little more
+                        // permissive than `Layout`, so we don't assert
+                        // anything in this branch (e.g., unreachability).
+                    }
+                } else {
+                    panic!("The composite of two sized layouts must be sized.")
+                }
+            }
+            SizeInfo::SliceDst(TrailingSliceLayout {
+                _offset: field_offset,
+                _elem_size: field_elem_size,
+            }) => {
+                if let SizeInfo::SliceDst(TrailingSliceLayout {
+                    _offset: composite_offset,
+                    _elem_size: composite_elem_size,
+                }) = composite.size_info
+                {
+                    // The offset of the trailing slice component is the sum
+                    // of the offset of the trailing field and the trailing
+                    // slice offset within that field.
+                    assert_eq!(composite_offset, offset + field_offset);
+                    // The elem size is unchanged.
+                    assert_eq!(composite_elem_size, field_elem_size);
+
+                    let field_analog =
+                        Layout::from_size_align(field_offset, field_align.get()).unwrap();
+
+                    if let Ok((actual_composite, actual_offset)) = base_analog.extend(field_analog)
+                    {
+                        assert_eq!(actual_offset, offset);
+                        assert_eq!(actual_composite.size(), composite_offset);
+                        assert_eq!(actual_composite.align(), composite.align.get());
+                    } else {
+                        // An error here reflects that composite of `base`
+                        // and `field` cannot correspond to a real Rust type
+                        // fragment, because such a fragment would violate
+                        // the basic invariants of a valid Rust layout. At
+                        // the time of writing, `DstLayout` is a little more
+                        // permissive than `Layout`, so we don't assert
+                        // anything in this branch (e.g., unreachability).
+                    }
+                } else {
+                    panic!("The extension of a layout with a DST must result in a DST.")
+                }
+            }
+        }
+    }
+
+    #[kani::proof]
+    #[kani::should_panic]
+    fn prove_dst_layout_extend_dst_panics() {
+        let base: DstLayout = kani::any();
+        let field: DstLayout = kani::any();
+        let packed: Option<NonZeroUsize> = kani::any();
+
+        if let Some(max_align) = packed {
+            kani::assume(max_align.is_power_of_two());
+            kani::assume(base.align <= max_align);
+        }
+
+        kani::assume(matches!(base.size_info, SizeInfo::SliceDst(..)));
+
+        let _ = base.extend(field, packed);
+    }
+
+    #[kani::proof]
+    fn prove_dst_layout_pad_to_align() {
+        use crate::util::core_layout::padding_needed_for;
+
+        let layout: DstLayout = kani::any();
+
+        let padded: DstLayout = layout.pad_to_align();
+
+        // Calling `pad_to_align` does not alter the `DstLayout`'s alignment.
+        assert_eq!(padded.align, layout.align);
+
+        if let SizeInfo::Sized { _size: unpadded_size } = layout.size_info {
+            if let SizeInfo::Sized { _size: padded_size } = padded.size_info {
+                // If the layout is sized, it will remain sized after padding is
+                // added. Its sum will be its unpadded size and the size of the
+                // trailing padding needed to satisfy its alignment
+                // requirements.
+                let padding = padding_needed_for(unpadded_size, layout.align);
+                assert_eq!(padded_size, unpadded_size + padding);
+
+                // Prove that calling `DstLayout::pad_to_align` behaves
+                // identically to `Layout::pad_to_align`.
+                let layout_analog =
+                    Layout::from_size_align(unpadded_size, layout.align.get()).unwrap();
+                let padded_analog = layout_analog.pad_to_align();
+                assert_eq!(padded_analog.align(), layout.align.get());
+                assert_eq!(padded_analog.size(), padded_size);
+            } else {
+                panic!("The padding of a sized layout must result in a sized layout.")
+            }
+        } else {
+            // If the layout is a DST, padding cannot be statically added.
+            assert_eq!(padded.size_info, layout.size_info);
         }
     }
 }

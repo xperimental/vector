@@ -13,7 +13,7 @@
 edition = "2018"
 rust-version = "1.51"
 name = "data-url"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Simon Sapin <simon.sapin@exyr.org>"]
 autotests = false
 description = "Processing of data: URL according to WHATWG’s Fetch Standard"
@@ -21,6 +21,9 @@ readme = "README.md"
 categories = ["no_std"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/servo/rust-url"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--generate-link-to-definition"]
 
 [lib]
 test = false

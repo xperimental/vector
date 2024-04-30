@@ -58,9 +58,13 @@ base: components: sources: syslog: configuration: {
 		description: "The type of socket to use."
 		required:    true
 		type: string: enum: {
-			tcp:  "Listen on TCP."
-			udp:  "Listen on UDP."
-			unix: "Listen on UDS. (Unix domain socket)"
+			tcp: "Listen on TCP."
+			udp: "Listen on UDP."
+			unix: """
+				Listen on UDS (Unix domain socket). This only supports Unix stream sockets.
+
+				For Unix datagram sockets, use the `socket` source instead.
+				"""
 		}
 	}
 	path: {
@@ -72,6 +76,12 @@ base: components: sources: syslog: configuration: {
 		relevant_when: "mode = \"unix\""
 		required:      true
 		type: string: examples: ["/path/to/socket"]
+	}
+	permit_origin: {
+		description:   "List of allowed origin IP networks. IP addresses must be in CIDR notation."
+		relevant_when: "mode = \"tcp\""
+		required:      false
+		type: array: items: type: string: examples: ["192.168.0.0/16", "127.0.0.1/32", "::1/128", "9876:9ca3:99ab::23/128"]
 	}
 	receive_buffer_bytes: {
 		description: """
@@ -165,14 +175,14 @@ base: components: sources: syslog: configuration: {
 			}
 			verify_certificate: {
 				description: """
-					Enables certificate verification.
+					Enables certificate verification. For components that create a server, this requires that the
+					client connections have a valid client certificate. For components that initiate requests,
+					this validates that the upstream has a valid certificate.
 
 					If enabled, certificates must not be expired and must be issued by a trusted
 					issuer. This verification operates in a hierarchical manner, checking that the leaf certificate (the
 					certificate presented by the client/server) is not only valid, but that the issuer of that certificate is also valid, and
 					so on until the verification process reaches a root certificate.
-
-					Relevant for both incoming and outgoing connections.
 
 					Do NOT set this to `false` unless you understand the risks of not verifying the validity of certificates.
 					"""

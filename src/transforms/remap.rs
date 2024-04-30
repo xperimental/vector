@@ -105,11 +105,9 @@ pub struct RemapConfig {
 
     /// Drops any event that is manually aborted during processing.
     ///
-    /// Normally, if a VRL program is manually aborted (using [`abort`][vrl_docs_abort]) when
-    /// processing an event, the original, unmodified event is sent downstream. In some cases,
-    /// you may not wish to send the event any further, such as if certain transformation or
-    /// enrichment is strictly required. Setting `drop_on_abort` to `true` allows you to ensure
-    /// these events do not get processed any further.
+    /// If a VRL program is manually aborted (using [`abort`][vrl_docs_abort]) when
+    /// processing an event, this option controls whether the original, unmodified event is sent
+    /// downstream without any modifications or if it is dropped.
     ///
     /// Additionally, dropped events can potentially be diverted to a specially-named output for
     /// further logging and analysis by setting `reroute_dropped`.
@@ -474,7 +472,7 @@ where
                         self.component_key
                             .as_ref()
                             .map(ToString::to_string)
-                            .unwrap_or_else(String::new),
+                            .unwrap_or_default(),
                     );
                     metric.replace_tag(
                         format!("{}.dropped.component_type", metadata_key),
@@ -550,18 +548,20 @@ where
             Err(reason) => {
                 let (reason, error, drop) = match reason {
                     Terminate::Abort(error) => {
-                        emit!(RemapMappingAbort {
-                            event_dropped: self.drop_on_abort,
-                        });
-
+                        if !self.reroute_dropped {
+                            emit!(RemapMappingAbort {
+                                event_dropped: self.drop_on_abort,
+                            });
+                        }
                         ("abort", error, self.drop_on_abort)
                     }
                     Terminate::Error(error) => {
-                        emit!(RemapMappingError {
-                            error: error.to_string(),
-                            event_dropped: self.drop_on_error,
-                        });
-
+                        if !self.reroute_dropped {
+                            emit!(RemapMappingError {
+                                error: error.to_string(),
+                                event_dropped: self.drop_on_error,
+                            });
+                        }
                         ("error", error, self.drop_on_error)
                     }
                 };
@@ -613,6 +613,7 @@ mod tests {
     use vrl::{btreemap, event_path};
 
     use super::*;
+    use crate::metrics::Controller;
     use crate::{
         config::{build_unit_tests, ConfigBuilder},
         event::{
@@ -1961,5 +1962,41 @@ mod tests {
             HashMap::from([(OutputId::from("in"), wanted)]),
             outputs1[0].schema_definitions(true),
         );
+    }
+
+    fn assert_no_metrics(source: String) {
+        vector_lib::metrics::init_test();
+
+        let config = RemapConfig {
+            source: Some(source),
+            drop_on_error: true,
+            drop_on_abort: true,
+            reroute_dropped: true,
+            ..Default::default()
+        };
+        let mut ast_runner = remap(config).unwrap();
+        let input_event =
+            Event::from_json_value(serde_json::json!({"a": 42}), LogNamespace::Vector).unwrap();
+        let dropped_event = transform_one_fallible(&mut ast_runner, input_event).unwrap_err();
+        let dropped_log = dropped_event.as_log();
+        assert_eq!(dropped_log.get(event_path!("a")), Some(&Value::from(42)));
+
+        let controller = Controller::get().expect("no controller");
+        let metrics = controller
+            .capture_metrics()
+            .into_iter()
+            .map(|metric| (metric.name().to_string(), metric))
+            .collect::<BTreeMap<String, Metric>>();
+        assert_eq!(metrics.get("component_discarded_events_total"), None);
+        assert_eq!(metrics.get("component_errors_total"), None);
+    }
+    #[test]
+    fn do_not_emit_metrics_when_dropped() {
+        assert_no_metrics("abort".to_string());
+    }
+
+    #[test]
+    fn do_not_emit_metrics_when_errored() {
+        assert_no_metrics("parse_key_value!(.message)".to_string());
     }
 }

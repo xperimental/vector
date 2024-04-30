@@ -25,7 +25,7 @@ use bytes::Bytes;
 use futures::FutureExt;
 use minitrace::prelude::*;
 
-use crate::raw::oio::PageOperation;
+use crate::raw::oio::ListOperation;
 use crate::raw::oio::ReadOperation;
 use crate::raw::oio::WriteOperation;
 use crate::raw::*;
@@ -129,15 +129,16 @@ pub struct MinitraceAccessor<A> {
     inner: A,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for MinitraceAccessor<A> {
     type Inner = A;
     type Reader = MinitraceWrapper<A::Reader>;
     type BlockingReader = MinitraceWrapper<A::BlockingReader>;
     type Writer = MinitraceWrapper<A::Writer>;
     type BlockingWriter = MinitraceWrapper<A::BlockingWriter>;
-    type Pager = MinitraceWrapper<A::Pager>;
-    type BlockingPager = MinitraceWrapper<A::BlockingPager>;
+    type Lister = MinitraceWrapper<A::Lister>;
+    type BlockingLister = MinitraceWrapper<A::BlockingLister>;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -204,7 +205,7 @@ impl<A: Accessor> LayeredAccessor for MinitraceAccessor<A> {
     }
 
     #[trace(enter_on_poll = true)]
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         self.inner
             .list(path, args)
             .map(|v| {
@@ -274,7 +275,7 @@ impl<A: Accessor> LayeredAccessor for MinitraceAccessor<A> {
     }
 
     #[trace]
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         self.inner.blocking_list(path, args).map(|(rp, it)| {
             (
                 rp,
@@ -335,7 +336,6 @@ impl<R: oio::BlockingRead> oio::BlockingRead for MinitraceWrapper<R> {
     }
 }
 
-#[async_trait]
 impl<R: oio::Write> oio::Write for MinitraceWrapper<R> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         let _g = self.span.set_local_parent();
@@ -370,23 +370,18 @@ impl<R: oio::BlockingWrite> oio::BlockingWrite for MinitraceWrapper<R> {
     }
 }
 
-#[async_trait]
-impl<R: oio::Page> oio::Page for MinitraceWrapper<R> {
-    async fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
-        self.inner
-            .next()
-            .in_span(Span::enter_with_parent(
-                PageOperation::Next.into_static(),
-                &self.span,
-            ))
-            .await
+impl<R: oio::List> oio::List for MinitraceWrapper<R> {
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<oio::Entry>>> {
+        let _g = self.span.set_local_parent();
+        let _span = LocalSpan::enter_with_local_parent(ListOperation::Next.into_static());
+        self.inner.poll_next(cx)
     }
 }
 
-impl<R: oio::BlockingPage> oio::BlockingPage for MinitraceWrapper<R> {
-    fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
+impl<R: oio::BlockingList> oio::BlockingList for MinitraceWrapper<R> {
+    fn next(&mut self) -> Result<Option<oio::Entry>> {
         let _g = self.span.set_local_parent();
-        let _span = LocalSpan::enter_with_local_parent(PageOperation::BlockingNext.into_static());
+        let _span = LocalSpan::enter_with_local_parent(ListOperation::BlockingNext.into_static());
         self.inner.next()
     }
 }

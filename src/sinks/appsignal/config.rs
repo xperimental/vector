@@ -58,17 +58,14 @@ pub(super) struct AppsignalConfig {
     tls: Option<TlsEnableableConfig>,
 
     #[configurable(derived)]
-    #[serde(
-        default,
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
-    )]
+    #[serde(default, skip_serializing_if = "crate::serde::is_default")]
     encoding: Transformer,
 
     #[configurable(derived)]
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
+        skip_serializing_if = "crate::serde::is_default"
     )]
     acknowledgements: AcknowledgementsConfig,
 }
@@ -102,7 +99,7 @@ impl AppsignalConfig {
         let service = AppsignalService::new(http_client, endpoint, push_api_key, compression);
 
         let request_opts = self.request;
-        let request_settings = request_opts.unwrap_with(&TowerRequestConfig::default());
+        let request_settings = request_opts.into_settings();
         let retry_logic = HttpStatusRetryLogic::new(|req: &AppsignalResponse| req.http_status);
 
         let service = ServiceBuilder::new()

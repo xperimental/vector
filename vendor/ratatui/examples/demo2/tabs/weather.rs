@@ -6,15 +6,22 @@ use ratatui::{
 };
 use time::OffsetDateTime;
 
-use crate::{color_from_oklab, layout, RgbSwatch, THEME};
+use crate::{color_from_oklab, RgbSwatch, THEME};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WeatherTab {
-    pub selected_row: usize,
+    pub download_progress: usize,
 }
 
 impl WeatherTab {
-    pub fn new(selected_row: usize) -> Self {
-        Self { selected_row }
+    /// Simulate a download indicator by decrementing the row index.
+    pub fn prev(&mut self) {
+        self.download_progress = self.download_progress.saturating_sub(1);
+    }
+
+    /// Simulate a download indicator by incrementing the row index.
+    pub fn next(&mut self) {
+        self.download_progress = self.download_progress.saturating_add(1);
     }
 }
 
@@ -32,14 +39,21 @@ impl Widget for WeatherTab {
             horizontal: 2,
             vertical: 1,
         });
-        let area = layout(area, Direction::Vertical, vec![0, 1, 1]);
-        render_gauges(self.selected_row, area[2], buf);
+        let [main, _, gauges] = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        let [calendar, charts] =
+            Layout::horizontal([Constraint::Length(23), Constraint::Min(0)]).areas(main);
+        let [simple, horizontal] =
+            Layout::vertical([Constraint::Length(29), Constraint::Min(0)]).areas(charts);
 
-        let area = layout(area[0], Direction::Horizontal, vec![23, 0]);
-        render_calendar(area[0], buf);
-        let area = layout(area[1], Direction::Horizontal, vec![29, 0]);
-        render_simple_barchart(area[0], buf);
-        render_horizontal_barchart(area[1], buf);
+        render_calendar(calendar, buf);
+        render_simple_barchart(simple, buf);
+        render_horizontal_barchart(horizontal, buf);
+        render_gauge(self.download_progress, gauges, buf);
     }
 }
 
@@ -114,7 +128,7 @@ fn render_horizontal_barchart(area: Rect, buf: &mut Buffer) {
         .render(area, buf);
 }
 
-pub fn render_gauges(progress: usize, area: Rect, buf: &mut Buffer) {
+pub fn render_gauge(progress: usize, area: Rect, buf: &mut Buffer) {
     let percent = (progress * 3).min(100) as f64;
 
     render_line_gauge(percent, area, buf);

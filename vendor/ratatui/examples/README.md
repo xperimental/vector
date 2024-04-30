@@ -1,15 +1,34 @@
 # Examples
 
-These gifs were created using [VHS](https://github.com/charmbracelet/vhs). Each example has a
-corresponding `.tape` file that holds instructions for how to generate the images. Note that the
-images themselves are stored in a separate git branch to avoid bloating the main repository.
+This folder contains unreleased code. View the [examples for the latest release
+(0.25.0)](https://github.com/ratatui-org/ratatui/tree/v0.25.0/examples) instead.
+
+> [!WARNING]
+>
+> There are backwards incompatible changes in these examples, as they are designed to compile
+> against the `main` branch.
+>
+> There are a few workaround for this problem:
+>
+> - View the examples as they were when the latest version was release by selecting the tag that
+>   matches that version. E.g. <https://github.com/ratatui-org/ratatui/tree/v0.25.0/examples>. There
+>   is a combo box at the top of this page which allows you to select any previous tagged version.
+> - To view the code locally, checkout the tag using `git switch --detach v0.25.0`.
+> - Use the latest [alpha version of Ratatui]. These are released weekly on Saturdays.
+> - Compile your code against the main branch either locally by adding e.g. `path = "../ratatui"` to
+>   the dependency, or remotely by adding `git = "https://github.com/ratatui-org/ratatui"`
+>
+> For a list of unreleased breaking changes, see [BREAKING-CHANGES.md].
+>
+> We don't keep the CHANGELOG updated with unreleased changes, check the git commit history or run
+> `git-cliff -u` against a cloned version of this repository.
 
 ## Demo2
 
 This is the demo example from the main README and crate page. Source: [demo2](./demo2/).
 
 ```shell
-cargo run --example=demo2 --features=crossterm
+cargo run --example=demo2 --features="crossterm widget-calendar"
 ```
 
 ![Demo2][demo2.gif]
@@ -117,7 +136,10 @@ two square-ish pixels in the space of a single rectangular terminal cell.
 cargo run --example=colors_rgb --features=crossterm
 ```
 
-![Colors RGB][colors_rgb.png]
+Note: VHs renders full screen animations poorly, so this is a screen capture rather than the output
+of the VHS tape.
+
+<https://github.com/ratatui-org/ratatui/assets/381361/485e775a-e0b5-4133-899b-1e8aeb56e774>
 
 ## Custom Widget
 
@@ -223,6 +245,18 @@ cargo run --example=popup --features=crossterm
 
 ![Popup][popup.gif]
 
+## Ratatui-logo
+
+A fun example of using half blocks to render graphics Source:
+[ratatui-logo.rs](./ratatui-logo.rs).
+
+>
+```shell
+cargo run --example=ratatui-logo --features=crossterm
+```
+
+![Ratatui Logo][ratatui-logo.gif]
+
 ## Scrollbar
 
 Demonstrates the [`Scrollbar`](https://docs.rs/ratatui/latest/ratatui/widgets/struct.Scrollbar.html)
@@ -271,7 +305,8 @@ cargo run --example=tabs --features=crossterm
 
 Demonstrates one approach to accepting user input. Source [user_input.rs](./user_input.rs).
 
-> [!NOTE] Consider using [`tui-textarea`](https://crates.io/crates/tui-textarea) or
+> [!NOTE]
+> Consider using [`tui-textarea`](https://crates.io/crates/tui-textarea) or
 > [`tui-input`](https://crates.io/crates/tui-input) crates for more functional text entry UIs.
 
 ```shell
@@ -280,13 +315,20 @@ cargo run --example=user_input --features=crossterm
 
 ![User Input][user_input.gif]
 
-<!--
-links to images to make it easier to update in bulk
-These are generated with `vhs publish examples/xxx.gif`
+## How to update these examples
 
-To update these examples in bulk:
+These gifs were created using [VHS](https://github.com/charmbracelet/vhs). Each example has a
+corresponding `.tape` file that holds instructions for how to generate the images. Note that the
+images themselves are stored in a separate `images` git branch to avoid bloating the main
+repository.
+
+<!--
+
+Links to images to make them easier to update in bulk. Use the following script to update and upload
+the examples to the images branch. (Requires push access to the branch).
+
 ```shell
-examples/generate.bash
+examples/vhs/generate.bash
 ```
 -->
 
@@ -296,7 +338,6 @@ examples/generate.bash
 [canvas.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/canvas.gif?raw=true
 [chart.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/chart.gif?raw=true
 [colors.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/colors.gif?raw=true
-[colors_rgb.png]: https://github.com/ratatui-org/ratatui/blob/images/examples/colors_rgb.png?raw=true
 [custom_widget.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/custom_widget.gif?raw=true
 [demo.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/demo.gif?raw=true
 [demo2.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/demo2.gif?raw=true
@@ -309,8 +350,12 @@ examples/generate.bash
 [panic.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/panic.gif?raw=true
 [paragraph.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/paragraph.gif?raw=true
 [popup.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/popup.gif?raw=true
+[ratatui-logo.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/ratatui-logo.gif?raw=true
 [scrollbar.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/scrollbar.gif?raw=true
 [sparkline.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/sparkline.gif?raw=true
-[table.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/table.gif?raw=true
+[table.gif]:  https://vhs.charm.sh/vhs-6njXBytDf0rwPufUtmSSpI.gif
 [tabs.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/tabs.gif?raw=true
 [user_input.gif]: https://github.com/ratatui-org/ratatui/blob/images/examples/user_input.gif?raw=true
+
+[alpha version of Ratatui]: https://crates.io/crates/ratatui/versions
+[BREAKING-CHANGES.md]: https://github.com/ratatui-org/ratatui/blob/main/BREAKING-CHANGES.md

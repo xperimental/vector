@@ -58,15 +58,16 @@ pub struct AsyncBacktraceAccessor<A: Accessor> {
     inner: A,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for AsyncBacktraceAccessor<A> {
     type Inner = A;
     type Reader = A::Reader;
     type BlockingReader = A::BlockingReader;
     type Writer = A::Writer;
     type BlockingWriter = A::BlockingWriter;
-    type Pager = A::Pager;
-    type BlockingPager = A::BlockingPager;
+    type Lister = A::Lister;
+    type BlockingLister = A::BlockingLister;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -103,7 +104,7 @@ impl<A: Accessor> LayeredAccessor for AsyncBacktraceAccessor<A> {
     }
 
     #[async_backtrace::framed]
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         self.inner.list(path, args).await
     }
 
@@ -125,7 +126,7 @@ impl<A: Accessor> LayeredAccessor for AsyncBacktraceAccessor<A> {
         self.inner.blocking_write(path, args)
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         self.inner.blocking_list(path, args)
     }
 }

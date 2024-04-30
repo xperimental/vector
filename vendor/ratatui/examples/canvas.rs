@@ -1,3 +1,18 @@
+//! # [Ratatui] Canvas example
+//!
+//! The latest version of this example is available in the [examples] folder in the repository.
+//!
+//! Please note that the examples are designed to be run against the `main` branch of the Github
+//! repository. This means that you may not be able to compile with the latest release version on
+//! crates.io, or the one that you have installed locally.
+//!
+//! See the [examples readme] for more information on finding examples that match the version of the
+//! library you are using.
+//!
+//! [Ratatui]: https://github.com/ratatui-org/ratatui
+//! [examples]: https://github.com/ratatui-org/ratatui/blob/main/examples
+//! [examples readme]: https://github.com/ratatui-org/ratatui/blob/main/examples/README.md
+
 use std::{
     io::{self, stdout, Stdout},
     time::{Duration, Instant},
@@ -59,10 +74,10 @@ impl App {
                 if let Event::Key(key) = event::read()? {
                     match key.code {
                         KeyCode::Char('q') => break,
-                        KeyCode::Down => app.y += 1.0,
-                        KeyCode::Up => app.y -= 1.0,
-                        KeyCode::Right => app.x += 1.0,
-                        KeyCode::Left => app.x -= 1.0,
+                        KeyCode::Down | KeyCode::Char('j') => app.y += 1.0,
+                        KeyCode::Up | KeyCode::Char('k') => app.y -= 1.0,
+                        KeyCode::Right | KeyCode::Char('l') => app.x += 1.0,
+                        KeyCode::Left | KeyCode::Char('h') => app.x -= 1.0,
                         _ => {}
                     }
                 }
@@ -107,19 +122,15 @@ impl App {
     }
 
     fn ui(&self, frame: &mut Frame) {
-        let main_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(frame.size());
+        let horizontal =
+            Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]);
+        let vertical = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]);
+        let [map, right] = horizontal.areas(frame.size());
+        let [pong, boxes] = vertical.areas(right);
 
-        let right_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(main_layout[1]);
-
-        frame.render_widget(self.map_canvas(), main_layout[0]);
-        frame.render_widget(self.pong_canvas(), right_layout[0]);
-        frame.render_widget(self.boxes_canvas(right_layout[1]), right_layout[1]);
+        frame.render_widget(self.map_canvas(), map);
+        frame.render_widget(self.pong_canvas(), pong);
+        frame.render_widget(self.boxes_canvas(boxes), boxes);
     }
 
     fn map_canvas(&self) -> impl Widget + '_ {

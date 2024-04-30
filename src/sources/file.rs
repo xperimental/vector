@@ -33,8 +33,8 @@ use crate::{
     encoding_transcode::{Decoder, Encoder},
     event::{BatchNotifier, BatchStatus, LogEvent},
     internal_events::{
-        FileBytesReceived, FileEventsReceived, FileOpen, FileSourceInternalEventsEmitter,
-        StreamClosedError,
+        FileBytesReceived, FileEventsReceived, FileInternalMetricsConfig, FileOpen,
+        FileSourceInternalEventsEmitter, StreamClosedError,
     },
     line_agg::{self, LineAgg},
     serde::bool_or_struct,
@@ -144,8 +144,10 @@ pub struct FileConfig {
 
     /// The directory used to persist file checkpoint positions.
     ///
-    /// By default, the [global `data_dir` option][global_data_dir] is used. Make sure the running user has write
-    /// permissions to this directory.
+    /// By default, the [global `data_dir` option][global_data_dir] is used.
+    /// Make sure the running user has write permissions to this directory.
+    ///
+    /// If this directory is specified, then Vector will attempt to create it.
     ///
     /// [global_data_dir]: https://vector.dev/docs/reference/configuration/global-options/#data_dir
     #[serde(default)]
@@ -247,11 +249,16 @@ pub struct FileConfig {
     #[serde(default)]
     log_namespace: Option<bool>,
 
+    #[configurable(derived)]
+    #[serde(default)]
+    internal_metrics: FileInternalMetricsConfig,
+
     /// How long to keep an open handle to a rotated log file.
-    #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
-    #[configurable(metadata(docs::type_unit = "milliseconds"))]
-    #[serde(default = "default_rotate_wait_ms")]
-    pub rotate_wait_ms: Duration,
+    /// The default value represents "no limit"
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[configurable(metadata(docs::type_unit = "seconds"))]
+    #[serde(default = "default_rotate_wait", rename = "rotate_wait_secs")]
+    pub rotate_wait: Duration,
 }
 
 fn default_max_line_bytes() -> usize {
@@ -286,8 +293,8 @@ fn default_line_delimiter() -> String {
     "\n".to_string()
 }
 
-const fn default_rotate_wait_ms() -> Duration {
-    Duration::from_millis(u64::MAX/1000) 
+const fn default_rotate_wait() -> Duration {
+    Duration::from_secs(u64::MAX / 2)
 }
 
 /// Configuration for how files should be identified.
@@ -314,6 +321,7 @@ pub enum FingerprintConfig {
         /// The number of bytes to skip ahead (or ignore) when reading the data used for generating the checksum.
         ///
         /// This can be helpful if all files share a common header that should be skipped.
+        #[serde(default = "default_ignored_header_bytes")]
         #[configurable(metadata(docs::type_unit = "bytes"))]
         ignored_header_bytes: usize,
 
@@ -342,6 +350,10 @@ impl Default for FingerprintConfig {
             lines: default_lines(),
         }
     }
+}
+
+const fn default_ignored_header_bytes() -> usize {
+    0
 }
 
 const fn default_lines() -> usize {
@@ -407,7 +419,8 @@ impl Default for FileConfig {
             encoding: None,
             acknowledgements: Default::default(),
             log_namespace: None,
-            rotate_wait_ms: default_rotate_wait_ms()
+            internal_metrics: Default::default(),
+            rotate_wait: default_rotate_wait(),
         }
     }
 }
@@ -519,11 +532,15 @@ pub fn file_source(
         Some(config.read_from),
     );
 
+    let emitter = FileSourceInternalEventsEmitter {
+        include_file_metric_tag: config.internal_metrics.include_file_tag,
+    };
+
     let paths_provider = Glob::new(
         &config.include,
         &config.exclude,
         MatchOptions::default(),
-        FileSourceInternalEventsEmitter,
+        emitter.clone(),
     )
     .expect("invalid glob patterns");
 
@@ -554,9 +571,9 @@ pub fn file_source(
         },
         oldest_first: config.oldest_first,
         remove_after: config.remove_after_secs.map(Duration::from_secs),
-        emitter: FileSourceInternalEventsEmitter,
+        emitter,
         handle: tokio::runtime::Handle::current(),
-        rotate_wait: config.rotate_wait_ms
+        rotate_wait: config.rotate_wait,
     };
 
     let event_metadata = EventMetadata {
@@ -600,6 +617,7 @@ pub fn file_source(
     };
 
     let checkpoints = checkpointer.view();
+    let include_file_metric_tag = config.internal_metrics.include_file_tag;
     Box::pin(async move {
         info!(message = "Starting file server.", include = ?include, exclude = ?exclude);
 
@@ -614,6 +632,7 @@ pub fn file_source(
                 emit!(FileBytesReceived {
                     byte_size: line.text.len(),
                     file: &line.filename,
+                    include_file_metric_tag,
                 });
                 // transcode each line from the file's encoding charset to utf8
                 line.text = match encoding_decoder.as_mut() {
@@ -651,6 +670,7 @@ pub fn file_source(
                 &line.filename,
                 &event_metadata,
                 log_namespace,
+                include_file_metric_tag,
             );
 
             if let Some(finalizer) = &finalizer {
@@ -737,12 +757,14 @@ fn wrap_with_line_agg(
             logic,
         )
         .map(
-            |(filename, text, (file_id, start_offset, end_offset))| Line {
+            |(filename, text, (file_id, start_offset, initial_end), lastline_context)| Line {
                 text,
                 filename,
                 file_id,
                 start_offset,
-                end_offset,
+                end_offset: lastline_context.map_or(initial_end, |(_, _, lastline_end_offset)| {
+                    lastline_end_offset
+                }),
             },
         ),
     )
@@ -761,6 +783,7 @@ fn create_event(
     file: &str,
     meta: &EventMetadata,
     log_namespace: LogNamespace,
+    include_file_metric_tag: bool,
 ) -> LogEvent {
     let deserializer = BytesDeserializer;
     let mut event = deserializer.parse_single(line, log_namespace);
@@ -812,6 +835,7 @@ fn create_event(
         count: 1,
         file,
         byte_size: event.estimated_json_encoded_size_of(),
+        include_file_metric_tag,
     });
 
     event
@@ -857,6 +881,9 @@ mod tests {
             },
             data_dir: Some(dir.path().to_path_buf()),
             glob_minimum_cooldown_ms: Duration::from_millis(100),
+            internal_metrics: FileInternalMetricsConfig {
+                include_file_tag: true,
+            },
             ..Default::default()
         }
     }
@@ -1047,7 +1074,7 @@ mod tests {
             file_key: Some(owned_value_path!("file")),
             offset_key: Some(owned_value_path!("offset")),
         };
-        let log = create_event(line, offset, file, &meta, LogNamespace::Legacy);
+        let log = create_event(line, offset, file, &meta, LogNamespace::Legacy, false);
 
         assert_eq!(log["file"], "some_file.rs".into());
         assert_eq!(log["host"], "Some.Machine".into());
@@ -1069,7 +1096,7 @@ mod tests {
             file_key: Some(owned_value_path!("file_path")),
             offset_key: Some(owned_value_path!("off")),
         };
-        let log = create_event(line, offset, file, &meta, LogNamespace::Legacy);
+        let log = create_event(line, offset, file, &meta, LogNamespace::Legacy, false);
 
         assert_eq!(log["file_path"], "some_file.rs".into());
         assert_eq!(log["hostname"], "Some.Machine".into());
@@ -1091,7 +1118,7 @@ mod tests {
             file_key: Some(owned_value_path!("ignored")),
             offset_key: Some(owned_value_path!("ignored")),
         };
-        let log = create_event(line, offset, file, &meta, LogNamespace::Vector);
+        let log = create_event(line, offset, file, &meta, LogNamespace::Vector, false);
 
         assert_eq!(log.value(), &value!("hello world"));
 
@@ -1482,11 +1509,12 @@ mod tests {
                     default_file_key()
                         .path
                         .expect("file key to exist")
-                        .to_string(),
-                    log_schema().host_key().unwrap().to_string(),
-                    log_schema().message_key().unwrap().to_string(),
-                    log_schema().timestamp_key().unwrap().to_string(),
-                    log_schema().source_type_key().unwrap().to_string()
+                        .to_string()
+                        .into(),
+                    log_schema().host_key().unwrap().to_string().into(),
+                    log_schema().message_key().unwrap().to_string().into(),
+                    log_schema().timestamp_key().unwrap().to_string().into(),
+                    log_schema().source_type_key().unwrap().to_string().into()
                 ]
                 .into_iter()
                 .collect::<HashSet<_>>()
@@ -1941,6 +1969,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let config = file::FileConfig {
             include: vec![dir.path().join("*")],
+            offset_key: Some(OptionalValuePath::from(owned_value_path!("offset"))),
             multiline: Some(MultilineConfig {
                 start_pattern: "INFO".to_owned(),
                 condition_pattern: "INFO".to_owned(),
@@ -1965,6 +1994,9 @@ mod tests {
             sleep_500_millis(),
         )
         .await;
+
+        assert_eq!(received[0].as_log()["offset"], 0.into());
+
         let lines = extract_messages_string(received);
         assert_eq!(lines, vec!["INFO hello\npart of hello"]);
 
@@ -1974,6 +2006,10 @@ mod tests {
                 writeln!(&mut file, "INFO goodbye").unwrap();
             })
             .await;
+        assert_eq!(
+            received_after_restart[0].as_log()["offset"],
+            (lines[0].len() + 1).into()
+        );
         let lines = extract_messages_string(received_after_restart);
         assert_eq!(lines, vec!["INFO goodbye"]);
     }

@@ -12,7 +12,6 @@ extern crate zerocopy;
 #[path = "../util.rs"]
 mod util;
 
-use static_assertions::assert_impl_all;
 use zerocopy::KnownLayout;
 
 use self::util::AU16;
@@ -23,15 +22,31 @@ fn main() {}
 // KnownLayout errors
 //
 
+struct NotKnownLayout;
+
+struct NotKnownLayoutDst([u8]);
+
+// | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+// |          N |        N |              N |        N |      KL00 |
 #[derive(KnownLayout)]
-struct KnownLayout1([u8]);
+struct KL00(u8, NotKnownLayoutDst);
 
-assert_impl_all!(KnownLayout1: KnownLayout);
-
+// | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+// |          N |        N |              Y |        N |      KL02 |
 #[derive(KnownLayout)]
-struct KnownLayout2<T: ?Sized>(T);
+struct KL02(u8, [u8]);
 
-assert_impl_all!(KnownLayout2<[u8]>: KnownLayout);
+// | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+// |          Y |        N |              N |        N |      KL08 |
+#[derive(KnownLayout)]
+#[repr(C)]
+struct KL08(u8, NotKnownLayoutDst);
+
+// | `repr(C)`? | generic? | `KnownLayout`? | `Sized`? | Type Name |
+// |          Y |        N |              N |        Y |      KL09 |
+#[derive(KnownLayout)]
+#[repr(C)]
+struct KL09(NotKnownLayout, NotKnownLayout);
 
 //
 // AsBytes errors
@@ -46,6 +61,15 @@ struct AsBytes1<T>(T);
 struct AsBytes2 {
     foo: u8,
     bar: AU16,
+}
+
+#[derive(AsBytes)]
+#[repr(C, packed(2))]
+struct AsBytes3 {
+    foo: u8,
+    // We'd prefer to use AU64 here, but you can't use aligned types in
+    // packed structs.
+    bar: u64,
 }
 
 //

@@ -102,8 +102,9 @@
 //! There is no guarantee about the order that plugins of the same type are
 //! visited by the iterator. They may be visited in any order.
 
-#![doc(html_root_url = "https://docs.rs/inventory/0.3.13")]
+#![doc(html_root_url = "https://docs.rs/inventory/0.3.15")]
 #![no_std]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![allow(
     clippy::doc_markdown,
     clippy::empty_enum,
@@ -150,7 +151,9 @@ pub trait ErasedNode: Sync {
 
 impl<T: Collect> ErasedNode for T {
     unsafe fn submit(&self, node: &'static Node) {
-        T::registry().submit(node);
+        unsafe {
+            T::registry().submit(node);
+        }
     }
 }
 
@@ -186,7 +189,9 @@ impl Registry {
     unsafe fn submit(&'static self, new: &'static Node) {
         let mut head = self.head.load(Ordering::Relaxed);
         loop {
-            *new.next.get() = head.as_ref();
+            unsafe {
+                *new.next.get() = head.as_ref();
+            }
             let new_ptr = new as *const Node as *mut Node;
             match self
                 .head
@@ -263,7 +268,7 @@ mod private {
 #[doc(hidden)]
 pub use crate::private::*;
 
-const ITER: () = {
+const _: () = {
     fn into_iter<T: Collect>() -> Iter<T> {
         let head = T::registry().head.load(Ordering::Acquire);
         Iter {
@@ -445,6 +450,7 @@ macro_rules! __do_submit {
                     target_os = "illumos",
                     target_os = "netbsd",
                     target_os = "openbsd",
+                    target_os = "none",
                 ),
                 link_section = ".init_array",
             )]
@@ -467,9 +473,4 @@ macro_rules! __do_submit {
             $($value)*
         }
     };
-}
-
-#[allow(dead_code)]
-fn unused() {
-    let () = ITER;
 }

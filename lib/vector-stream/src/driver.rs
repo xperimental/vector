@@ -4,15 +4,13 @@ use futures::{poll, FutureExt, Stream, StreamExt, TryFutureExt};
 use tokio::{pin, select};
 use tower::Service;
 use tracing::Instrument;
+use vector_common::internal_event::emit;
 use vector_common::internal_event::{
     register, ByteSize, BytesSent, CallError, InternalEventHandle as _, PollReadyError, Registered,
     RegisteredEventCache, SharedString, TaggedEventsSent,
 };
 use vector_common::request_metadata::{GroupedCountByteSize, MetaDescriptive};
-use vector_core::{
-    event::{EventFinalizers, EventStatus, Finalizable},
-    internal_event::emit,
-};
+use vector_core::event::{EventFinalizers, EventStatus, Finalizable};
 
 use super::FuturesUnorderedCount;
 
@@ -274,7 +272,7 @@ mod tests {
     type Counter = Arc<AtomicUsize>;
 
     #[derive(Debug)]
-    struct DelayRequest(usize, EventFinalizers, RequestMetadata);
+    struct DelayRequest(EventFinalizers, RequestMetadata);
 
     impl DelayRequest {
         fn new(value: usize, counter: &Counter) -> Self {
@@ -285,7 +283,6 @@ mod tests {
                 counter.fetch_add(value, Ordering::Relaxed);
             });
             Self(
-                value,
                 EventFinalizers::new(EventFinalizer::new(batch)),
                 RequestMetadata::default(),
             )
@@ -294,17 +291,17 @@ mod tests {
 
     impl Finalizable for DelayRequest {
         fn take_finalizers(&mut self) -> vector_core::event::EventFinalizers {
-            std::mem::take(&mut self.1)
+            std::mem::take(&mut self.0)
         }
     }
 
     impl MetaDescriptive for DelayRequest {
         fn get_metadata(&self) -> &RequestMetadata {
-            &self.2
+            &self.1
         }
 
         fn metadata_mut(&mut self) -> &mut RequestMetadata {
-            &mut self.2
+            &mut self.1
         }
     }
 

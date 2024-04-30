@@ -130,15 +130,16 @@ pub struct TracingAccessor<A> {
     inner: A,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for TracingAccessor<A> {
     type Inner = A;
     type Reader = TracingWrapper<A::Reader>;
     type BlockingReader = TracingWrapper<A::BlockingReader>;
     type Writer = TracingWrapper<A::Writer>;
     type BlockingWriter = TracingWrapper<A::BlockingWriter>;
-    type Pager = TracingWrapper<A::Pager>;
-    type BlockingPager = TracingWrapper<A::BlockingPager>;
+    type Lister = TracingWrapper<A::Lister>;
+    type BlockingLister = TracingWrapper<A::BlockingLister>;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -191,7 +192,7 @@ impl<A: Accessor> LayeredAccessor for TracingAccessor<A> {
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         self.inner
             .list(path, args)
             .map(|v| v.map(|(rp, s)| (rp, TracingWrapper::new(Span::current(), s))))
@@ -248,7 +249,7 @@ impl<A: Accessor> LayeredAccessor for TracingAccessor<A> {
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         self.inner
             .blocking_list(path, args)
             .map(|(rp, it)| (rp, TracingWrapper::new(Span::current(), it)))
@@ -318,7 +319,6 @@ impl<R: oio::BlockingRead> oio::BlockingRead for TracingWrapper<R> {
     }
 }
 
-#[async_trait]
 impl<R: oio::Write> oio::Write for TracingWrapper<R> {
     #[tracing::instrument(
         parent = &self.span,
@@ -363,17 +363,16 @@ impl<R: oio::BlockingWrite> oio::BlockingWrite for TracingWrapper<R> {
     }
 }
 
-#[async_trait]
-impl<R: oio::Page> oio::Page for TracingWrapper<R> {
+impl<R: oio::List> oio::List for TracingWrapper<R> {
     #[tracing::instrument(parent = &self.span, level = "debug", skip_all)]
-    async fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
-        self.inner.next().await
+    fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<oio::Entry>>> {
+        self.inner.poll_next(cx)
     }
 }
 
-impl<R: oio::BlockingPage> oio::BlockingPage for TracingWrapper<R> {
+impl<R: oio::BlockingList> oio::BlockingList for TracingWrapper<R> {
     #[tracing::instrument(parent = &self.span, level = "debug", skip_all)]
-    fn next(&mut self) -> Result<Option<Vec<oio::Entry>>> {
+    fn next(&mut self) -> Result<Option<oio::Entry>> {
         self.inner.next()
     }
 }

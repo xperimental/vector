@@ -1,3 +1,18 @@
+//! # [Ratatui] BarChart example
+//!
+//! The latest version of this example is available in the [examples] folder in the repository.
+//!
+//! Please note that the examples are designed to be run against the `main` branch of the Github
+//! repository. This means that you may not be able to compile with the latest release version on
+//! crates.io, or the one that you have installed locally.
+//!
+//! See the [examples readme] for more information on finding examples that match the version of the
+//! library you are using.
+//!
+//! [Ratatui]: https://github.com/ratatui-org/ratatui
+//! [examples]: https://github.com/ratatui-org/ratatui/blob/main/examples
+//! [examples readme]: https://github.com/ratatui-org/ratatui/blob/main/examples/README.md
+
 use std::{
     error::Error,
     io,
@@ -134,11 +149,11 @@ fn run_app<B: Backend>(
     }
 }
 
-fn ui(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)])
-        .split(f.size());
+fn ui(frame: &mut Frame, app: &App) {
+    let vertical = Layout::vertical([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)]);
+    let horizontal = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]);
+    let [top, bottom] = vertical.areas(frame.size());
+    let [left, right] = horizontal.areas(bottom);
 
     let barchart = BarChart::default()
         .block(Block::default().title("Data1").borders(Borders::ALL))
@@ -146,15 +161,10 @@ fn ui(f: &mut Frame, app: &App) {
         .bar_width(9)
         .bar_style(Style::default().fg(Color::Yellow))
         .value_style(Style::default().fg(Color::Black).bg(Color::Yellow));
-    f.render_widget(barchart, chunks[0]);
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
-
-    draw_bar_with_group_labels(f, app, chunks[0]);
-    draw_horizontal_bars(f, app, chunks[1]);
+    frame.render_widget(barchart, top);
+    draw_bar_with_group_labels(frame, app, left);
+    draw_horizontal_bars(frame, app, right);
 }
 
 fn create_groups<'a>(app: &'a App, combine_values_and_labels: bool) -> Vec<BarGroup<'a>> {
@@ -190,7 +200,7 @@ fn create_groups<'a>(app: &'a App, combine_values_and_labels: bool) -> Vec<BarGr
                 })
                 .collect();
             BarGroup::default()
-                .label(Line::from(month).alignment(Alignment::Center))
+                .label(Line::from(month).centered())
                 .bars(&bars)
         })
         .collect()

@@ -42,7 +42,7 @@ use crate::{
     },
     event::Event,
     internal_events::{
-        FileSourceInternalEventsEmitter, KubernetesLifecycleError,
+        FileInternalMetricsConfig, FileSourceInternalEventsEmitter, KubernetesLifecycleError,
         KubernetesLogsEventAnnotationError, KubernetesLogsEventNamespaceAnnotationError,
         KubernetesLogsEventNodeAnnotationError, KubernetesLogsEventsReceived,
         KubernetesLogsPodInfo, StreamClosedError,
@@ -132,8 +132,12 @@ pub struct Config {
 
     /// The directory used to persist file checkpoint positions.
     ///
-    /// By default, the global `data_dir` option is used. Make sure the running user has write
-    /// permissions to this directory.
+    /// By default, the [global `data_dir` option][global_data_dir] is used.
+    /// Make sure the running user has write permissions to this directory.
+    ///
+    /// If this directory is specified, then Vector will attempt to create it.
+    ///
+    /// [global_data_dir]: https://vector.dev/docs/reference/configuration/global-options/#data_dir
     #[configurable(metadata(docs::examples = "/var/local/lib/vector/"))]
     #[configurable(metadata(docs::human_name = "Data Directory"))]
     data_dir: Option<PathBuf>,
@@ -240,11 +244,16 @@ pub struct Config {
     #[serde(default)]
     log_namespace: Option<bool>,
 
+    #[configurable(derived)]
+    #[serde(default)]
+    internal_metrics: FileInternalMetricsConfig,
+
     /// How long to keep an open handle to a rotated log file.
-    #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
-    #[configurable(metadata(docs::type_unit = "milliseconds"))]
-    #[serde(default = "default_rotate_wait_ms")]
-    rotate_wait_ms: Duration
+    /// The default value represents "no limit"
+    #[serde_as(as = "serde_with::DurationSeconds<u64>")]
+    #[configurable(metadata(docs::type_unit = "seconds"))]
+    #[serde(default = "default_rotate_wait", rename = "rotate_wait_secs")]
+    rotate_wait: Duration,
 }
 
 const fn default_read_from() -> ReadFromConfig {
@@ -289,7 +298,8 @@ impl Default for Config {
             use_apiserver_cache: false,
             delay_deletion_ms: default_delay_deletion_ms(),
             log_namespace: None,
-            rotate_wait_ms: default_rotate_wait_ms()
+            internal_metrics: Default::default(),
+            rotate_wait: default_rotate_wait(),
         }
     }
 }
@@ -541,7 +551,8 @@ struct Source {
     use_apiserver_cache: bool,
     ingestion_timestamp_field: Option<OwnedTargetPath>,
     delay_deletion: Duration,
-    rotate_wait: Duration
+    include_file_metric_tag: bool,
+    rotate_wait: Duration,
 }
 
 impl Source {
@@ -623,7 +634,8 @@ impl Source {
             use_apiserver_cache: config.use_apiserver_cache,
             ingestion_timestamp_field,
             delay_deletion,
-            rotate_wait: config.rotate_wait_ms
+            include_file_metric_tag: config.internal_metrics.include_file_tag,
+            rotate_wait: config.rotate_wait,
         })
     }
 
@@ -657,7 +669,8 @@ impl Source {
             use_apiserver_cache,
             ingestion_timestamp_field,
             delay_deletion,
-            rotate_wait
+            include_file_metric_tag,
+            rotate_wait,
         } = self;
 
         let mut reflectors = Vec::new();
@@ -737,8 +750,12 @@ impl Source {
             delay_deletion,
         )));
 
-        let paths_provider =
-            K8sPathsProvider::new(pod_state.clone(), ns_state.clone(), include_paths, exclude_paths);
+        let paths_provider = K8sPathsProvider::new(
+            pod_state.clone(),
+            ns_state.clone(),
+            include_paths,
+            exclude_paths,
+        );
         let annotator = PodMetadataAnnotator::new(pod_state, pod_fields_spec, log_namespace);
         let ns_annotator =
             NamespaceMetadataAnnotator::new(ns_state, namespace_fields_spec, log_namespace);
@@ -795,10 +812,12 @@ impl Source {
             // We do not remove the log files, `kubelet` is responsible for it.
             remove_after: None,
             // The standard emitter.
-            emitter: FileSourceInternalEventsEmitter,
+            emitter: FileSourceInternalEventsEmitter {
+                include_file_metric_tag,
+            },
             // A handle to the current tokio runtime
             handle: tokio::runtime::Handle::current(),
-            rotate_wait
+            rotate_wait,
         };
 
         let (file_source_tx, file_source_rx) = futures::channel::mpsc::channel::<Vec<Line>>(2);
@@ -1007,21 +1026,25 @@ const fn default_delay_deletion_ms() -> Duration {
     Duration::from_millis(60_000)
 }
 
-const fn default_rotate_wait_ms() -> Duration {
-    Duration::from_millis(u64::MAX/1000)
+const fn default_rotate_wait() -> Duration {
+    Duration::from_secs(u64::MAX / 2)
 }
 
+// This function constructs the patterns we include for file watching, created
+// from the defaults or user provided configuration.
 fn prepare_include_paths(config: &Config) -> crate::Result<Vec<glob::Pattern>> {
     prepare_glob_patterns(&config.include_paths_glob_patterns, "Including")
 }
 
+// This function constructs the patterns we exclude from file watching, created
+// from the defaults or user provided configuration.
 fn prepare_exclude_paths(config: &Config) -> crate::Result<Vec<glob::Pattern>> {
     prepare_glob_patterns(&config.exclude_paths_glob_patterns, "Excluding")
 }
 
 // This function constructs the patterns for file watching, created
 // from the defaults or user provided configuration.
-fn prepare_glob_patterns(paths: &Vec<PathBuf>, op: &str) -> crate::Result<Vec<glob::Pattern>> {
+fn prepare_glob_patterns(paths: &[PathBuf], op: &str) -> crate::Result<Vec<glob::Pattern>> {
     let ret = paths
         .iter()
         .map(|pattern| {

@@ -1,3 +1,18 @@
+//! # [Ratatui] Custom Widget example
+//!
+//! The latest version of this example is available in the [examples] folder in the repository.
+//!
+//! Please note that the examples are designed to be run against the `main` branch of the Github
+//! repository. This means that you may not be able to compile with the latest release version on
+//! crates.io, or the one that you have installed locally.
+//!
+//! See the [examples readme] for more information on finding examples that match the version of the
+//! library you are using.
+//!
+//! [Ratatui]: https://github.com/ratatui-org/ratatui
+//! [examples]: https://github.com/ratatui-org/ratatui/blob/main/examples
+//! [examples readme]: https://github.com/ratatui-org/ratatui/blob/main/examples/README.md
+
 use std::{error::Error, io, ops::ControlFlow, time::Duration};
 
 use crossterm::{
@@ -171,42 +186,34 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
 }
 
 fn ui(frame: &mut Frame, states: &[State; 3]) {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Max(3),
-            Constraint::Length(1),
-            Constraint::Min(0), // ignore remaining space
-        ])
-        .split(frame.size());
+    let vertical = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Max(3),
+        Constraint::Length(1),
+        Constraint::Min(0), // ignore remaining space
+    ]);
+    let [title, buttons, help, _] = vertical.areas(frame.size());
+
     frame.render_widget(
         Paragraph::new("Custom Widget Example (mouse enabled)"),
-        layout[0],
+        title,
     );
-    render_buttons(frame, layout[1], states);
-    frame.render_widget(
-        Paragraph::new("←/→: select, Space: toggle, q: quit"),
-        layout[2],
-    );
+    render_buttons(frame, buttons, states);
+    frame.render_widget(Paragraph::new("←/→: select, Space: toggle, q: quit"), help);
 }
 
 fn render_buttons(frame: &mut Frame<'_>, area: Rect, states: &[State; 3]) {
-    let layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15),
-            Constraint::Length(15),
-            Constraint::Length(15),
-            Constraint::Min(0), // ignore remaining space
-        ])
-        .split(area);
-    frame.render_widget(Button::new("Red").theme(RED).state(states[0]), layout[0]);
-    frame.render_widget(
-        Button::new("Green").theme(GREEN).state(states[1]),
-        layout[1],
-    );
-    frame.render_widget(Button::new("Blue").theme(BLUE).state(states[2]), layout[2]);
+    let horizontal = Layout::horizontal([
+        Constraint::Length(15),
+        Constraint::Length(15),
+        Constraint::Length(15),
+        Constraint::Min(0), // ignore remaining space
+    ]);
+    let [red, green, blue, _] = horizontal.areas(area);
+
+    frame.render_widget(Button::new("Red").theme(RED).state(states[0]), red);
+    frame.render_widget(Button::new("Green").theme(GREEN).state(states[1]), green);
+    frame.render_widget(Button::new("Blue").theme(BLUE).state(states[2]), blue);
 }
 
 fn handle_key_event(
@@ -216,12 +223,12 @@ fn handle_key_event(
 ) -> ControlFlow<()> {
     match key.code {
         KeyCode::Char('q') => return ControlFlow::Break(()),
-        KeyCode::Left => {
+        KeyCode::Left | KeyCode::Char('h') => {
             button_states[*selected_button] = State::Normal;
             *selected_button = selected_button.saturating_sub(1);
             button_states[*selected_button] = State::Selected;
         }
-        KeyCode::Right => {
+        KeyCode::Right | KeyCode::Char('l') => {
             button_states[*selected_button] = State::Normal;
             *selected_button = selected_button.saturating_add(1).min(2);
             button_states[*selected_button] = State::Selected;

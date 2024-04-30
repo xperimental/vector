@@ -32,7 +32,7 @@ use reqsign::AliyunOssSigner;
 
 use super::core::*;
 use super::error::parse_error;
-use super::pager::OssPager;
+use super::lister::OssLister;
 use super::writer::OssWriter;
 use crate::raw::*;
 use crate::services::oss::writer::OssWriters;
@@ -50,17 +50,16 @@ pub struct OssBuilder {
     presign_endpoint: Option<String>,
     bucket: String,
 
-    // sse options
+    // OSS features
     server_side_encryption: Option<String>,
     server_side_encryption_key_id: Option<String>,
+    allow_anonymous: bool,
 
     // authenticate options
     access_key_id: Option<String>,
     access_key_secret: Option<String>,
 
     http_client: Option<HttpClient>,
-    /// the size of each part, and the range is 5MB ~ 5 GB.
-    write_min_size: Option<usize>,
     /// batch_max_operations
     batch_max_operations: Option<usize>,
 }
@@ -70,7 +69,8 @@ impl Debug for OssBuilder {
         let mut d = f.debug_struct("Builder");
         d.field("root", &self.root)
             .field("bucket", &self.bucket)
-            .field("endpoint", &self.endpoint);
+            .field("endpoint", &self.endpoint)
+            .field("allow_anonymous", &self.allow_anonymous);
 
         d.finish_non_exhaustive()
     }
@@ -233,18 +233,17 @@ impl OssBuilder {
         self
     }
 
-    /// set the minimum size of unsized write, it should be greater than 5 MB.
-    /// Reference: [OSS Multipart upload](https://www.alibabacloud.com/help/en/object-storage-service/latest/multipart-upload-6)
-    pub fn write_min_size(&mut self, write_min_size: usize) -> &mut Self {
-        self.write_min_size = Some(write_min_size);
-
-        self
-    }
-
     /// Set maximum batch operations of this backend.
     pub fn batch_max_operations(&mut self, batch_max_operations: usize) -> &mut Self {
         self.batch_max_operations = Some(batch_max_operations);
 
+        self
+    }
+
+    /// Allow anonymous will allow opendal to send request without signing
+    /// when credential is not loaded.
+    pub fn allow_anonymous(&mut self) -> &mut Self {
+        self.allow_anonymous = true;
         self
     }
 }
@@ -268,10 +267,12 @@ impl Builder for OssBuilder {
             .map(|v| builder.server_side_encryption(v));
         map.get("server_side_encryption_key_id")
             .map(|v| builder.server_side_encryption_key_id(v));
-        map.get("write_min_size")
-            .map(|v| builder.write_min_size(v.parse::<usize>().unwrap()));
         map.get("batch_max_operations")
             .map(|v| builder.batch_max_operations(v.parse::<usize>().unwrap()));
+        map.get("allow_anonymous")
+            .filter(|v| *v == "on" || *v == "true")
+            .map(|_| builder.allow_anonymous());
+
         builder
     }
 
@@ -355,6 +356,7 @@ impl Builder for OssBuilder {
                 endpoint,
                 host,
                 presign_endpoint,
+                allow_anonymous: self.allow_anonymous,
                 signer,
                 loader,
                 client,
@@ -375,11 +377,11 @@ pub struct OssBackend {
 #[async_trait]
 impl Accessor for OssBackend {
     type Reader = IncomingAsyncBody;
-    type BlockingReader = ();
     type Writer = OssWriters;
+    type Lister = oio::PageLister<OssLister>;
+    type BlockingReader = ();
     type BlockingWriter = ();
-    type Pager = OssPager;
-    type BlockingPager = ();
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -418,12 +420,12 @@ impl Accessor for OssBackend {
                 },
 
                 delete: true,
-                create_dir: true,
                 copy: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
-                list_without_delimiter: true,
+                list_with_limit: true,
+                list_with_start_after: true,
+                list_with_recursive: true,
 
                 presign: true,
                 presign_stat: true,
@@ -439,18 +441,16 @@ impl Accessor for OssBackend {
         am
     }
 
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
+    async fn stat(&self, path: &str, args: OpStat) -> Result<RpStat> {
         let resp = self
             .core
-            .oss_put_object(path, None, &OpWrite::default(), AsyncBody::Empty)
+            .oss_head_object(path, args.if_match(), args.if_none_match())
             .await?;
+
         let status = resp.status();
 
         match status {
-            StatusCode::CREATED | StatusCode::OK => {
-                resp.into_body().consume().await?;
-                Ok(RpCreateDir::default())
-            }
+            StatusCode::OK => parse_into_metadata(path, resp.headers()).map(RpStat::new),
             _ => Err(parse_error(resp).await?),
         }
     }
@@ -471,8 +471,16 @@ impl Accessor for OssBackend {
 
         match status {
             StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
-                let meta = parse_into_metadata(path, resp.headers())?;
-                Ok((RpRead::with_metadata(meta), resp.into_body()))
+                let size = parse_content_length(resp.headers())?;
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
+            }
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
             }
             _ => Err(parse_error(resp).await?),
         }
@@ -482,49 +490,12 @@ impl Accessor for OssBackend {
         let writer = OssWriter::new(self.core.clone(), path, args.clone());
 
         let w = if args.append() {
-            OssWriters::Two(oio::AppendObjectWriter::new(writer))
+            OssWriters::Two(oio::AppendWriter::new(writer))
         } else {
-            OssWriters::One(oio::MultipartUploadWriter::new(writer))
+            OssWriters::One(oio::MultipartWriter::new(writer, args.concurrent()))
         };
 
         Ok((RpWrite::default(), w))
-    }
-
-    async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
-        let resp = self.core.oss_copy_object(from, to).await?;
-        let status = resp.status();
-
-        match status {
-            StatusCode::OK => {
-                resp.into_body().consume().await?;
-                Ok(RpCopy::default())
-            }
-            _ => Err(parse_error(resp).await?),
-        }
-    }
-
-    async fn stat(&self, path: &str, args: OpStat) -> Result<RpStat> {
-        if path == "/" {
-            let m = Metadata::new(EntryMode::DIR);
-            return Ok(RpStat::new(m));
-        }
-
-        let resp = self
-            .core
-            .oss_head_object(path, args.if_match(), args.if_none_match())
-            .await?;
-
-        let status = resp.status();
-
-        match status {
-            StatusCode::OK => parse_into_metadata(path, resp.headers()).map(RpStat::new),
-            StatusCode::NOT_FOUND if path.ends_with('/') => {
-                let m = Metadata::new(EntryMode::DIR);
-                Ok(RpStat::new(m))
-            }
-
-            _ => Err(parse_error(resp).await?),
-        }
     }
 
     async fn delete(&self, path: &str, _: OpDelete) -> Result<RpDelete> {
@@ -539,11 +510,28 @@ impl Accessor for OssBackend {
         }
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        Ok((
-            RpList::default(),
-            OssPager::new(self.core.clone(), path, args.delimiter(), args.limit()),
-        ))
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = OssLister::new(
+            self.core.clone(),
+            path,
+            args.recursive(),
+            args.limit(),
+            args.start_after(),
+        );
+        Ok((RpList::default(), oio::PageLister::new(l)))
+    }
+
+    async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
+        let resp = self.core.oss_copy_object(from, to).await?;
+        let status = resp.status();
+
+        match status {
+            StatusCode::OK => {
+                resp.into_body().consume().await?;
+                Ok(RpCopy::default())
+            }
+            _ => Err(parse_error(resp).await?),
+        }
     }
 
     async fn presign(&self, path: &str, args: OpPresign) -> Result<RpPresign> {

@@ -30,12 +30,21 @@ use std::fmt::Debug;
 ///
 /// # Notes
 ///
-/// Capabilities reflects the native support for operations. It's possible
-/// that some operations are not supported by current Operator, but still
-/// can be used.
+/// Every operator has two kinds of capabilities:
 ///
-/// For examples, we will support `seek` and `next` for all readers
-/// returned by services.
+/// - [`OperatorInfo::native_capability`][crate::OperatorInfo::native_capability] reflects the native
+///   support for operations.
+/// - [`OperatorInfo::full_capability`][crate::OperatorInfo::full_capability] reflects the full support
+///   for operations.
+///
+/// It's possible that some operations are not supported by current Operator, but still
+/// can be used. For examples:
+///
+/// - S3 doesn't support `seek` natively, but we implement it via `range` header.
+/// - S3 doesn't support blocking API, but `BlockingLayer` makes it possible.
+///
+/// Users can use full_capability to decide what operations can be used and use native_capability to
+/// decide if this operation optimized or not.
 ///
 /// # Naming Style
 ///
@@ -52,6 +61,12 @@ pub struct Capability {
     pub stat_with_if_match: bool,
     /// If operator supports stat with if none match.
     pub stat_with_if_none_match: bool,
+    /// if operator supports read with override cache control.
+    pub stat_with_override_cache_control: bool,
+    /// if operator supports read with override content disposition.
+    pub stat_with_override_content_disposition: bool,
+    /// if operator supports read with override content type.
+    pub stat_with_override_content_type: bool,
 
     /// If operator supports read.
     pub read: bool,
@@ -98,6 +113,10 @@ pub struct Capability {
     ///
     /// For example, Google GCS requires align size to 256KiB in write_multi.
     pub write_multi_align_size: Option<usize>,
+    /// write_total_max_size is the max size that services support in write_total.
+    ///
+    /// For example, Cloudflare D1 supports 1MB as max in write_total.
+    pub write_total_max_size: Option<usize>,
 
     /// If operator supports create dir.
     pub create_dir: bool,
@@ -117,10 +136,8 @@ pub struct Capability {
     pub list_with_limit: bool,
     /// If backend supports list with start after.
     pub list_with_start_after: bool,
-    /// If backend support list with using slash as delimiter.
-    pub list_with_delimiter_slash: bool,
-    /// If backend supports list without delimiter.
-    pub list_without_delimiter: bool,
+    /// If backend supports list with recursive.
+    pub list_with_recursive: bool,
 
     /// If operator supports presign.
     pub presign: bool,

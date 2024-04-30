@@ -1,13 +1,10 @@
-#![warn(missing_docs)]
-use crate::prelude::*;
+use crate::{prelude::*, widgets::Block};
 
 mod bar;
 mod bar_group;
 
 pub use bar::Bar;
 pub use bar_group::BarGroup;
-
-use super::{Block, Widget};
 
 /// A chart showing values as [bars](Bar).
 ///
@@ -35,6 +32,9 @@ use super::{Block, Widget};
 ///
 /// The chart can have a [`Direction`] (by default the bars are [`Vertical`](Direction::Vertical)).
 /// This is set using [`BarChart::direction`].
+///
+/// Note: this is the only widget that doesn't implement `Widget` for `&T` because the current
+/// implementation modifies the internal state of self. This will be fixed in the future.
 ///
 /// # Examples
 ///
@@ -127,6 +127,7 @@ impl<'a> BarChart<'a> {
     }
 
     /// Surround the [`BarChart`] with a [`Block`].
+    #[must_use = "method moves the value of self and returns the modified value"]
     pub fn block(mut self, block: Block<'a>) -> BarChart<'a> {
         self.block = Some(block);
         self
@@ -161,6 +162,7 @@ impl<'a> BarChart<'a> {
     /// // █ █ █
     /// // f b b
     /// ```
+    #[must_use = "method moves the value of self and returns the modified value"]
     pub fn max(mut self, max: u64) -> BarChart<'a> {
         self.max = Some(max);
         self
@@ -168,10 +170,14 @@ impl<'a> BarChart<'a> {
 
     /// Set the default style of the bar.
     ///
+    /// `style` accepts any type that is convertible to [`Style`] (e.g. [`Style`], [`Color`], or
+    /// your own type that implements [`Into<Style>`]).
+    ///
     /// It is also possible to set individually the style of each [`Bar`].
     /// In this case the default style will be patched by the individual style
-    pub fn bar_style(mut self, style: Style) -> BarChart<'a> {
-        self.bar_style = style;
+    #[must_use = "method moves the value of self and returns the modified value"]
+    pub fn bar_style<S: Into<Style>>(mut self, style: S) -> BarChart<'a> {
+        self.bar_style = style.into();
         self
     }
 
@@ -182,6 +188,7 @@ impl<'a> BarChart<'a> {
     ///
     /// If not set, this defaults to `1`.  
     /// The bar label also uses this value as its width.
+    #[must_use = "method moves the value of self and returns the modified value"]
     pub fn bar_width(mut self, width: u16) -> BarChart<'a> {
         self.bar_width = width;
         self
@@ -205,6 +212,7 @@ impl<'a> BarChart<'a> {
     /// // █   █
     /// // f   b
     /// ```
+    #[must_use = "method moves the value of self and returns the modified value"]
     pub fn bar_gap(mut self, gap: u16) -> BarChart<'a> {
         self.bar_gap = gap;
         self
@@ -213,6 +221,7 @@ impl<'a> BarChart<'a> {
     /// The [`bar::Set`](crate::symbols::bar::Set) to use for displaying the bars.
     ///
     /// If not set, the default is [`bar::NINE_LEVELS`](crate::symbols::bar::NINE_LEVELS).
+    #[must_use = "method moves the value of self and returns the modified value"]
     pub fn bar_set(mut self, bar_set: symbols::bar::Set) -> BarChart<'a> {
         self.bar_set = bar_set;
         self
@@ -220,18 +229,25 @@ impl<'a> BarChart<'a> {
 
     /// Set the default value style of the bar.
     ///
+    /// `style` accepts any type that is convertible to [`Style`] (e.g. [`Style`], [`Color`], or
+    /// your own type that implements [`Into<Style>`]).
+    ///
     /// It is also possible to set individually the value style of each [`Bar`].
     /// In this case the default value style will be patched by the individual value style
     ///
     /// # See also
     ///
     /// [Bar::value_style] to set the value style individually.
-    pub fn value_style(mut self, style: Style) -> BarChart<'a> {
-        self.value_style = style;
+    #[must_use = "method moves the value of self and returns the modified value"]
+    pub fn value_style<S: Into<Style>>(mut self, style: S) -> BarChart<'a> {
+        self.value_style = style.into();
         self
     }
 
     /// Set the default label style of the groups and bars.
+    ///
+    /// `style` accepts any type that is convertible to [`Style`] (e.g. [`Style`], [`Color`], or
+    /// your own type that implements [`Into<Style>`]).
     ///
     /// It is also possible to set individually the label style of each [`Bar`] or [`BarGroup`].
     /// In this case the default label style will be patched by the individual label style
@@ -239,12 +255,14 @@ impl<'a> BarChart<'a> {
     /// # See also
     ///
     /// [Bar::label] to set the label style individually.
-    pub fn label_style(mut self, style: Style) -> BarChart<'a> {
-        self.label_style = style;
+    #[must_use = "method moves the value of self and returns the modified value"]
+    pub fn label_style<S: Into<Style>>(mut self, style: S) -> BarChart<'a> {
+        self.label_style = style.into();
         self
     }
 
     /// Set the gap between [`BarGroup`].
+    #[must_use = "method moves the value of self and returns the modified value"]
     pub fn group_gap(mut self, gap: u16) -> BarChart<'a> {
         self.group_gap = gap;
         self
@@ -252,9 +270,13 @@ impl<'a> BarChart<'a> {
 
     /// Set the style of the entire chart.
     ///
+    /// `style` accepts any type that is convertible to [`Style`] (e.g. [`Style`], [`Color`], or
+    /// your own type that implements [`Into<Style>`]).
+    ///
     /// The style will be applied to everything that isn't styled (borders, bars, labels, ...).
-    pub fn style(mut self, style: Style) -> BarChart<'a> {
-        self.style = style;
+    #[must_use = "method moves the value of self and returns the modified value"]
+    pub fn style<S: Into<Style>>(mut self, style: S) -> BarChart<'a> {
+        self.style = style.into();
         self
     }
 
@@ -277,6 +299,7 @@ impl<'a> BarChart<'a> {
     ///
     /// █bar██
     /// ```
+    #[must_use = "method moves the value of self and returns the modified value"]
     pub fn direction(mut self, direction: Direction) -> BarChart<'a> {
         self.direction = direction;
         self
@@ -289,7 +312,7 @@ struct LabelInfo {
     height: u16,
 }
 
-impl<'a> BarChart<'a> {
+impl BarChart<'_> {
     /// Returns the visible bars length in ticks. A cell contains 8 ticks.
     /// `available_space` used to calculate how many bars can fit in the space
     /// `bar_max_length` is the maximal length a bar can take.
@@ -368,16 +391,7 @@ impl<'a> BarChart<'a> {
         }
     }
 
-    /// renders the block if there is one and updates the area to the inner area
-    fn render_block(&mut self, area: &mut Rect, buf: &mut Buffer) {
-        if let Some(block) = self.block.take() {
-            let inner_area = block.inner(*area);
-            block.render(*area, buf);
-            *area = inner_area
-        }
-    }
-
-    fn render_horizontal(self, buf: &mut Buffer, area: Rect) {
+    fn render_horizontal(&self, buf: &mut Buffer, area: Rect) {
         // get the longest label
         let label_size = self
             .data
@@ -402,10 +416,8 @@ impl<'a> BarChart<'a> {
 
         // print all visible bars, label and values
         let mut bar_y = bars_area.top();
-        for (ticks_vec, mut group) in group_ticks.into_iter().zip(self.data) {
-            let bars = std::mem::take(&mut group.bars);
-
-            for (ticks, bar) in ticks_vec.into_iter().zip(bars) {
+        for (ticks_vec, group) in group_ticks.into_iter().zip(self.data.iter()) {
+            for (ticks, bar) in ticks_vec.into_iter().zip(group.bars.iter()) {
                 let bar_length = (ticks / 8) as u16;
                 let bar_style = self.bar_style.patch(bar.style);
 
@@ -458,7 +470,7 @@ impl<'a> BarChart<'a> {
         }
     }
 
-    fn render_vertical(self, buf: &mut Buffer, area: Rect) {
+    fn render_vertical(&self, buf: &mut Buffer, area: Rect) {
         let label_info = self.label_info(area.height - 1);
 
         let bars_area = Rect {
@@ -520,7 +532,7 @@ impl<'a> BarChart<'a> {
     }
 
     fn render_labels_and_values(
-        self,
+        &self,
         area: Rect,
         buf: &mut Buffer,
         label_info: LabelInfo,
@@ -529,12 +541,10 @@ impl<'a> BarChart<'a> {
         // print labels and values in one go
         let mut bar_x = area.left();
         let bar_y = area.bottom() - label_info.height - 1;
-        for (mut group, ticks_vec) in self.data.into_iter().zip(group_ticks) {
+        for (group, ticks_vec) in self.data.iter().zip(group_ticks) {
             if group.bars.is_empty() {
                 continue;
             }
-            let bars = std::mem::take(&mut group.bars);
-
             // print group labels under the bars or the previous labels
             if label_info.group_label_visible {
                 let label_max_width =
@@ -549,7 +559,7 @@ impl<'a> BarChart<'a> {
             }
 
             // print the bar values and numbers
-            for (mut bar, ticks) in bars.into_iter().zip(ticks_vec) {
+            for (bar, ticks) in group.bars.iter().zip(ticks_vec) {
                 if label_info.bar_label_visible {
                     bar.render_label(buf, self.bar_width, bar_x, bar_y + 1, self.label_style);
                 }
@@ -563,19 +573,26 @@ impl<'a> BarChart<'a> {
     }
 }
 
-impl<'a> Widget for BarChart<'a> {
-    fn render(mut self, mut area: Rect, buf: &mut Buffer) {
+impl Widget for BarChart<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        self.render_ref(area, buf);
+    }
+}
+
+impl WidgetRef for BarChart<'_> {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, self.style);
 
-        self.render_block(&mut area, buf);
+        self.block.render_ref(area, buf);
+        let inner = self.block.inner_if_some(area);
 
-        if area.is_empty() || self.data.is_empty() || self.bar_width == 0 {
+        if inner.is_empty() || self.data.is_empty() || self.bar_width == 0 {
             return;
         }
 
         match self.direction {
-            Direction::Horizontal => self.render_horizontal(buf, area),
-            Direction::Vertical => self.render_vertical(buf, area),
+            Direction::Horizontal => self.render_horizontal(buf, inner),
+            Direction::Vertical => self.render_vertical(buf, inner),
         }
     }
 }
@@ -586,7 +603,7 @@ impl<'a> Styled for BarChart<'a> {
         self.style
     }
 
-    fn set_style(self, style: Style) -> Self {
+    fn set_style<S: Into<Style>>(self, style: S) -> Self::Item {
         self.style(style)
     }
 }

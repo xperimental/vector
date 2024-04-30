@@ -29,7 +29,7 @@ use reqsign::HuaweicloudObsSigner;
 
 use super::core::ObsCore;
 use super::error::parse_error;
-use super::pager::ObsPager;
+use super::lister::ObsLister;
 use super::writer::ObsWriter;
 use crate::raw::*;
 use crate::services::obs::writer::ObsWriters;
@@ -249,11 +249,11 @@ pub struct ObsBackend {
 #[async_trait]
 impl Accessor for ObsBackend {
     type Reader = IncomingAsyncBody;
-    type BlockingReader = ();
     type Writer = ObsWriters;
+    type Lister = oio::PageLister<ObsLister>;
+    type BlockingReader = ();
     type BlockingWriter = ();
-    type Pager = ObsPager;
-    type BlockingPager = ();
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut am = AccessorInfo::default();
@@ -291,12 +291,10 @@ impl Accessor for ObsBackend {
                 },
 
                 delete: true,
-                create_dir: true,
                 copy: true,
 
                 list: true,
-                list_with_delimiter_slash: true,
-                list_without_delimiter: true,
+                list_with_recursive: true,
 
                 presign: true,
                 presign_stat: true,
@@ -307,6 +305,87 @@ impl Accessor for ObsBackend {
             });
 
         am
+    }
+
+    async fn stat(&self, path: &str, args: OpStat) -> Result<RpStat> {
+        let resp = self.core.obs_head_object(path, &args).await?;
+
+        let status = resp.status();
+
+        // The response is very similar to azblob.
+        match status {
+            StatusCode::OK => parse_into_metadata(path, resp.headers()).map(RpStat::new),
+            StatusCode::NOT_FOUND if path.ends_with('/') => {
+                Ok(RpStat::new(Metadata::new(EntryMode::DIR)))
+            }
+            _ => Err(parse_error(resp).await?),
+        }
+    }
+
+    async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
+        let resp = self.core.obs_get_object(path, &args).await?;
+
+        let status = resp.status();
+
+        match status {
+            StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
+                let size = parse_content_length(resp.headers())?;
+                let range = parse_content_range(resp.headers())?;
+                Ok((
+                    RpRead::new().with_size(size).with_range(range),
+                    resp.into_body(),
+                ))
+            }
+            StatusCode::RANGE_NOT_SATISFIABLE => {
+                resp.into_body().consume().await?;
+                Ok((RpRead::new().with_size(Some(0)), IncomingAsyncBody::empty()))
+            }
+            _ => Err(parse_error(resp).await?),
+        }
+    }
+
+    async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
+        let writer = ObsWriter::new(self.core.clone(), path, args.clone());
+
+        let w = if args.append() {
+            ObsWriters::Two(oio::AppendWriter::new(writer))
+        } else {
+            ObsWriters::One(oio::MultipartWriter::new(writer, args.concurrent()))
+        };
+
+        Ok((RpWrite::default(), w))
+    }
+
+    async fn delete(&self, path: &str, _: OpDelete) -> Result<RpDelete> {
+        let resp = self.core.obs_delete_object(path).await?;
+
+        let status = resp.status();
+
+        match status {
+            StatusCode::NO_CONTENT | StatusCode::ACCEPTED | StatusCode::NOT_FOUND => {
+                Ok(RpDelete::default())
+            }
+            _ => Err(parse_error(resp).await?),
+        }
+    }
+
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
+        let l = ObsLister::new(self.core.clone(), path, args.recursive(), args.limit());
+        Ok((RpList::default(), oio::PageLister::new(l)))
+    }
+
+    async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
+        let resp = self.core.obs_copy_object(from, to).await?;
+
+        let status = resp.status();
+
+        match status {
+            StatusCode::OK => {
+                resp.into_body().consume().await?;
+                Ok(RpCopy::default())
+            }
+            _ => Err(parse_error(resp).await?),
+        }
     }
 
     async fn presign(&self, path: &str, args: OpPresign) -> Result<RpPresign> {
@@ -328,108 +407,5 @@ impl Accessor for ObsBackend {
             parts.uri,
             parts.headers,
         )))
-    }
-
-    async fn create_dir(&self, path: &str, _: OpCreateDir) -> Result<RpCreateDir> {
-        let mut req = self.core.obs_put_object_request(
-            path,
-            Some(0),
-            &OpWrite::default(),
-            AsyncBody::Empty,
-        )?;
-
-        self.core.sign(&mut req).await?;
-
-        let resp = self.core.send(req).await?;
-
-        let status = resp.status();
-
-        match status {
-            StatusCode::CREATED | StatusCode::OK => {
-                resp.into_body().consume().await?;
-                Ok(RpCreateDir::default())
-            }
-            _ => Err(parse_error(resp).await?),
-        }
-    }
-
-    async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
-        let resp = self.core.obs_get_object(path, &args).await?;
-
-        let status = resp.status();
-
-        match status {
-            StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
-                let meta = parse_into_metadata(path, resp.headers())?;
-                Ok((RpRead::with_metadata(meta), resp.into_body()))
-            }
-            _ => Err(parse_error(resp).await?),
-        }
-    }
-
-    async fn write(&self, path: &str, args: OpWrite) -> Result<(RpWrite, Self::Writer)> {
-        let writer = ObsWriter::new(self.core.clone(), path, args.clone());
-
-        let w = if args.append() {
-            ObsWriters::Two(oio::AppendObjectWriter::new(writer))
-        } else {
-            ObsWriters::One(oio::MultipartUploadWriter::new(writer))
-        };
-
-        Ok((RpWrite::default(), w))
-    }
-
-    async fn copy(&self, from: &str, to: &str, _args: OpCopy) -> Result<RpCopy> {
-        let resp = self.core.obs_copy_object(from, to).await?;
-
-        let status = resp.status();
-
-        match status {
-            StatusCode::OK => {
-                resp.into_body().consume().await?;
-                Ok(RpCopy::default())
-            }
-            _ => Err(parse_error(resp).await?),
-        }
-    }
-
-    async fn stat(&self, path: &str, args: OpStat) -> Result<RpStat> {
-        // Stat root always returns a DIR.
-        if path == "/" {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
-        let resp = self.core.obs_head_object(path, &args).await?;
-
-        let status = resp.status();
-
-        // The response is very similar to azblob.
-        match status {
-            StatusCode::OK => parse_into_metadata(path, resp.headers()).map(RpStat::new),
-            StatusCode::NOT_FOUND if path.ends_with('/') => {
-                Ok(RpStat::new(Metadata::new(EntryMode::DIR)))
-            }
-            _ => Err(parse_error(resp).await?),
-        }
-    }
-
-    async fn delete(&self, path: &str, _: OpDelete) -> Result<RpDelete> {
-        let resp = self.core.obs_delete_object(path).await?;
-
-        let status = resp.status();
-
-        match status {
-            StatusCode::NO_CONTENT | StatusCode::ACCEPTED | StatusCode::NOT_FOUND => {
-                Ok(RpDelete::default())
-            }
-            _ => Err(parse_error(resp).await?),
-        }
-    }
-
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
-        Ok((
-            RpList::default(),
-            ObsPager::new(self.core.clone(), path, args.delimiter(), args.limit()),
-        ))
     }
 }

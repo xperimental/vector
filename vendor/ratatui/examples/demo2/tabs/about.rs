@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use ratatui::{prelude::*, widgets::*};
 
-use crate::{layout, RgbSwatch, THEME};
+use crate::{RgbSwatch, THEME};
 
 const RATATUI_LOGO: [&str; 32] = [
     "               ███              ",
@@ -38,22 +38,28 @@ const RATATUI_LOGO: [&str; 32] = [
     "  █xxxxxxxxxxxxxxxxxxxxx█ █     ",
 ];
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AboutTab {
-    selected_row: usize,
+    row_index: usize,
 }
 
 impl AboutTab {
-    pub fn new(selected_row: usize) -> Self {
-        Self { selected_row }
+    pub fn prev_row(&mut self) {
+        self.row_index = self.row_index.saturating_sub(1);
+    }
+
+    pub fn next_row(&mut self) {
+        self.row_index = self.row_index.saturating_add(1);
     }
 }
 
 impl Widget for AboutTab {
     fn render(self, area: Rect, buf: &mut Buffer) {
         RgbSwatch.render(area, buf);
-        let area = layout(area, Direction::Horizontal, vec![34, 0]);
-        render_crate_description(area[1], buf);
-        render_logo(self.selected_row, area[0], buf);
+        let horizontal = Layout::horizontal([Constraint::Length(34), Constraint::Min(0)]);
+        let [description, logo] = horizontal.areas(area);
+        render_crate_description(description, buf);
+        render_logo(self.row_index, logo, buf);
     }
 }
 
@@ -116,6 +122,7 @@ pub fn render_logo(selected_row: usize, area: Rect, buf: &mut Buffer) {
                 ('█', '█') => {
                     cell.set_char('█');
                     cell.fg = rat_color;
+                    cell.bg = rat_color;
                 }
                 ('█', ' ') => {
                     cell.set_char('▀');

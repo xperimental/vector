@@ -21,7 +21,8 @@ use std::io;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -81,13 +82,15 @@ use crate::*;
 ///     Ok(())
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PrometheusClientLayer {
     metrics: PrometheusClientMetrics,
 }
 
 impl PrometheusClientLayer {
-    /// create PrometheusClientLayer while registering itself to this registry.
+    /// Create PrometheusClientLayer while registering itself to this registry. Please keep in caution
+    /// that do NOT call this method multiple times with a same registry. If you want initialize multiple
+    /// [`PrometheusClientLayer`] with a single registry, you should use [`clone`] instead.
     pub fn new(registry: &mut Registry) -> Self {
         let metrics = PrometheusClientMetrics::register(registry);
         Self { metrics }
@@ -124,12 +127,15 @@ struct PrometheusClientMetrics {
     request_duration_seconds: Family<OperationLabels, Histogram>,
     /// The histogram of bytes
     bytes_histogram: Family<OperationLabels, Histogram>,
+    /// The counter of bytes
+    bytes_total: Family<OperationLabels, Counter>,
 }
 
 impl PrometheusClientMetrics {
     pub fn register(registry: &mut Registry) -> Self {
         let requests_total = Family::default();
         let errors_total = Family::default();
+        let bytes_total = Family::default();
         let request_duration_seconds = Family::<OperationLabels, _>::new_with_constructor(|| {
             let buckets = histogram::exponential_buckets(0.01, 2.0, 16);
             Histogram::new(buckets)
@@ -139,19 +145,21 @@ impl PrometheusClientMetrics {
             Histogram::new(buckets)
         });
 
-        registry.register("opendal_requests_total", "", requests_total.clone());
-        registry.register("opendal_errors_total", "", errors_total.clone());
+        registry.register("opendal_requests", "", requests_total.clone());
+        registry.register("opendal_errors", "", errors_total.clone());
         registry.register(
             "opendal_request_duration_seconds",
             "",
             request_duration_seconds.clone(),
         );
         registry.register("opendal_bytes_histogram", "", bytes_histogram.clone());
+        registry.register("opendal_bytes", "", bytes_total.clone());
         Self {
             requests_total,
             errors_total,
             request_duration_seconds,
             bytes_histogram,
+            bytes_total,
         }
     }
 
@@ -174,6 +182,7 @@ impl PrometheusClientMetrics {
         self.bytes_histogram
             .get_or_create(&labels)
             .observe(bytes as f64);
+        self.bytes_total.get_or_create(&labels).inc_by(bytes as u64);
     }
 
     fn observe_request_duration(&self, scheme: Scheme, op: Operation, duration: Duration) {
@@ -199,15 +208,16 @@ impl<A: Accessor> Debug for PrometheusAccessor<A> {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
     type Inner = A;
     type Reader = PrometheusMetricWrapper<A::Reader>;
     type BlockingReader = PrometheusMetricWrapper<A::BlockingReader>;
     type Writer = PrometheusMetricWrapper<A::Writer>;
     type BlockingWriter = PrometheusMetricWrapper<A::BlockingWriter>;
-    type Pager = A::Pager;
-    type BlockingPager = A::BlockingPager;
+    type Lister = A::Lister;
+    type BlockingLister = A::BlockingLister;
 
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -328,7 +338,7 @@ impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
         })
     }
 
-    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Pager)> {
+    async fn list(&self, path: &str, args: OpList) -> Result<(RpList, Self::Lister)> {
         self.metrics
             .increment_request_total(self.scheme, Operation::List);
         let start_time = Instant::now();
@@ -485,7 +495,7 @@ impl<A: Accessor> LayeredAccessor for PrometheusAccessor<A> {
         })
     }
 
-    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingPager)> {
+    fn blocking_list(&self, path: &str, args: OpList) -> Result<(RpList, Self::BlockingLister)> {
         self.metrics
             .increment_request_total(self.scheme, Operation::BlockingList);
         let start_time = Instant::now();
@@ -608,7 +618,6 @@ impl<R: oio::BlockingRead> oio::BlockingRead for PrometheusMetricWrapper<R> {
     }
 }
 
-#[async_trait]
 impl<R: oio::Write> oio::Write for PrometheusMetricWrapper<R> {
     fn poll_write(&mut self, cx: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
         self.inner

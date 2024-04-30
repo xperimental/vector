@@ -53,7 +53,7 @@ pub use id::{ComponentKey, Inputs};
 pub use loading::{
     load, load_builder_from_paths, load_from_paths, load_from_paths_with_provider_and_secrets,
     load_from_str, load_source_from_paths, merge_path_lists, process_paths, COLLECTOR,
-    CONFIG_PATHS,
+    CONFIG_PATHS, STRICT_ENV_VARS,
 };
 pub use provider::ProviderConfig;
 pub use secret::SecretBackend;
@@ -505,7 +505,7 @@ pub struct TestInput {
 
     /// The type of the input event.
     ///
-    /// Can be either `raw`, `log`, or `metric.
+    /// Can be either `raw`, `vrl`, `log`, or `metric.
     #[serde(default = "default_test_input_type", rename = "type")]
     pub type_str: String,
 
@@ -514,6 +514,11 @@ pub struct TestInput {
     /// Use this only when the input event should be a raw event (i.e. unprocessed/undecoded log
     /// event) and when the input type is set to `raw`.
     pub value: Option<String>,
+
+    /// The vrl expression to generate the input event.
+    ///
+    /// Only relevant when `type` is `vrl`.
+    pub source: Option<String>,
 
     /// The set of log fields to use when creating a log input event.
     ///
@@ -561,7 +566,8 @@ mod tests {
                 let c2 = config::load_from_str(config, format).unwrap();
                 match (
                     config::warnings(&c2),
-                    topology::TopologyPieces::build(&c, &diff, HashMap::new()).await,
+                    topology::TopologyPieces::build(&c, &diff, HashMap::new(), Default::default())
+                        .await,
                 ) {
                     (warnings, Ok(_pieces)) => Ok(warnings),
                     (_, Err(errors)) => Err(errors),

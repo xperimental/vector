@@ -20,7 +20,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 
 use crate::raw::*;
 use crate::*;
@@ -31,7 +30,8 @@ use crate::*;
 /// For example, S3 `PUT Object` and fs `write_all`.
 ///
 /// The layout after adopting [`OneShotWrite`]:
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait OneShotWrite: Send + Sync + Unpin + 'static {
     /// write_once write all data at once.
     ///
@@ -47,8 +47,13 @@ pub struct OneShotWriter<W: OneShotWrite> {
 
 enum State<W> {
     Idle(Option<W>),
-    Write(BoxFuture<'static, (W, Result<()>)>),
+    Write(BoxedFuture<(W, Result<()>)>),
 }
+
+/// # Safety
+///
+/// wasm32 is a special target that we only have one event-loop for this state.
+unsafe impl<S: OneShotWrite> Send for State<S> {}
 
 /// # Safety
 ///
@@ -65,28 +70,23 @@ impl<W: OneShotWrite> OneShotWriter<W> {
     }
 }
 
-#[async_trait]
 impl<W: OneShotWrite> oio::Write for OneShotWriter<W> {
     fn poll_write(&mut self, _: &mut Context<'_>, bs: &dyn oio::WriteBuf) -> Poll<Result<usize>> {
-        loop {
-            match &mut self.state {
-                State::Idle(_) => {
-                    return match &self.buffer {
-                        Some(_) => Poll::Ready(Err(Error::new(
-                            ErrorKind::Unsupported,
-                            "OneShotWriter doesn't support multiple write",
-                        ))),
-                        None => {
-                            let size = bs.remaining();
-                            let bs = bs.vectored_bytes(size);
-                            self.buffer = Some(oio::ChunkedBytes::from_vec(bs));
-                            Poll::Ready(Ok(size))
-                        }
-                    }
+        match &mut self.state {
+            State::Idle(_) => match &self.buffer {
+                Some(_) => Poll::Ready(Err(Error::new(
+                    ErrorKind::Unsupported,
+                    "OneShotWriter doesn't support multiple write",
+                ))),
+                None => {
+                    let size = bs.remaining();
+                    let bs = bs.vectored_bytes(size);
+                    self.buffer = Some(oio::ChunkedBytes::from_vec(bs));
+                    Poll::Ready(Ok(size))
                 }
-                State::Write(_) => {
-                    unreachable!("OneShotWriter must not go into State::Write during poll_write")
-                }
+            },
+            State::Write(_) => {
+                unreachable!("OneShotWriter must not go into State::Write during poll_write")
             }
         }
     }

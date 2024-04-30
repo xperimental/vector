@@ -37,10 +37,15 @@ license-files = [
 ]
 
 [advisories]
-ignore = [ ]
+ignore = [ 
+    # Vulnerability in `rsa` crate: https://rustsec.org/advisories/RUSTSEC-2023-0071.html
+    # There is not fix available yet.
+    # https://github.com/vectordotdev/vector/issues/19262
+    "RUSTSEC-2023-0071"
+]
 
 [bans]
 multiple-versions = "allow"
 deny = [
-    { name = "ring", wrappers = ["azure_storage"] },
+    { name = "ring", wrappers = ["rustls", "sct", "rustls-webpki"] },
 ]

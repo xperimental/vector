@@ -63,8 +63,9 @@ impl PathsProvider for K8sPathsProvider {
                 filter_paths(
                     filter_paths(paths_iter, &self.include_paths, true),
                     &self.exclude_paths,
-                    false
-                ).collect::<Vec<_>>()
+                    false,
+                )
+                .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -185,7 +186,7 @@ fn real_glob(pattern: &str) -> impl Iterator<Item = PathBuf> {
 fn filter_paths<'a>(
     iter: impl Iterator<Item = PathBuf> + 'a,
     patterns: impl AsRef<[glob::Pattern]> + 'a,
-    include: bool
+    include: bool,
 ) -> impl Iterator<Item = PathBuf> + 'a {
     iter.filter(move |path| {
         let m = patterns.as_ref().iter().any(|pattern| {
@@ -197,7 +198,11 @@ fn filter_paths<'a>(
                 },
             )
         });
-        if include { m } else { !m }
+        if include {
+            m
+        } else {
+            !m
+        }
     })
 }
 
@@ -208,8 +213,8 @@ mod tests {
     use k8s_openapi::{api::core::v1::Pod, apimachinery::pkg::apis::meta::v1::ObjectMeta};
 
     use super::{
-        build_container_exclusion_patterns, filter_paths, extract_excluded_containers_for_pod,
-        extract_pod_logs_directory, list_pod_log_paths,
+        build_container_exclusion_patterns, extract_excluded_containers_for_pod,
+        extract_pod_logs_directory, filter_paths, list_pod_log_paths,
     };
 
     #[test]
@@ -536,7 +541,7 @@ mod tests {
                     "/var/log/pods/b.log",
                     "/var/log/pods/c.log.foo",
                     "/var/log/pods/d.logbar",
-                    "/tmp/foo"
+                    "/tmp/foo",
                 ],
                 vec!["/var/log/pods/*"],
                 vec![
@@ -557,15 +562,9 @@ mod tests {
                 vec![],
             ),
             (
-                vec![
-                    "/var/log/pods/a.log",
-                    "/tmp/foo",
-                ],
+                vec!["/var/log/pods/a.log", "/tmp/foo"],
                 vec!["**/*"],
-                vec![
-                    "/var/log/pods/a.log",
-                    "/tmp/foo",
-                ],
+                vec!["/var/log/pods/a.log", "/tmp/foo"],
             ),
         ];
 

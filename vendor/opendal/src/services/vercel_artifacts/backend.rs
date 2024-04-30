@@ -28,6 +28,7 @@ use super::writer::VercelArtifactsWriter;
 use crate::raw::*;
 use crate::*;
 
+#[doc = include_str!("docs.md")]
 #[derive(Clone)]
 pub struct VercelArtifactsBackend {
     pub(crate) access_token: String,
@@ -45,11 +46,11 @@ impl Debug for VercelArtifactsBackend {
 #[async_trait]
 impl Accessor for VercelArtifactsBackend {
     type Reader = IncomingAsyncBody;
-    type BlockingReader = ();
     type Writer = oio::OneShotWriter<VercelArtifactsWriter>;
+    type Lister = ();
+    type BlockingReader = ();
     type BlockingWriter = ();
-    type Pager = ();
-    type BlockingPager = ();
+    type BlockingLister = ();
 
     fn info(&self) -> AccessorInfo {
         let mut ma = AccessorInfo::default();
@@ -68,16 +69,28 @@ impl Accessor for VercelArtifactsBackend {
         ma
     }
 
+    async fn stat(&self, path: &str, _args: OpStat) -> Result<RpStat> {
+        let res = self.vercel_artifacts_stat(path).await?;
+
+        let status = res.status();
+
+        match status {
+            StatusCode::OK => {
+                let meta = parse_into_metadata(path, res.headers())?;
+                Ok(RpStat::new(meta))
+            }
+
+            _ => Err(parse_error(res).await?),
+        }
+    }
+
     async fn read(&self, path: &str, args: OpRead) -> Result<(RpRead, Self::Reader)> {
         let resp = self.vercel_artifacts_get(path, args).await?;
 
         let status = resp.status();
 
         match status {
-            StatusCode::OK | StatusCode::PARTIAL_CONTENT => {
-                let meta = parse_into_metadata(path, resp.headers())?;
-                Ok((RpRead::with_metadata(meta), resp.into_body()))
-            }
+            StatusCode::OK | StatusCode::PARTIAL_CONTENT => Ok((RpRead::new(), resp.into_body())),
 
             _ => Err(parse_error(resp).await?),
         }
@@ -92,25 +105,6 @@ impl Accessor for VercelArtifactsBackend {
                 path.to_string(),
             )),
         ))
-    }
-
-    async fn stat(&self, path: &str, _args: OpStat) -> Result<RpStat> {
-        if (path == "/") || (path.ends_with('/')) {
-            return Ok(RpStat::new(Metadata::new(EntryMode::DIR)));
-        }
-
-        let res = self.vercel_artifacts_stat(path).await?;
-
-        let status = res.status();
-
-        match status {
-            StatusCode::OK => {
-                let meta = parse_into_metadata(path, res.headers())?;
-                Ok(RpStat::new(meta))
-            }
-
-            _ => Err(parse_error(res).await?),
-        }
     }
 }
 

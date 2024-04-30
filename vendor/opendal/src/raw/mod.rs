@@ -35,6 +35,11 @@ pub use layer::*;
 mod path;
 pub use path::*;
 
+#[cfg(feature = "internal-path-cache")]
+mod path_cache;
+#[cfg(feature = "internal-path-cache")]
+pub use path_cache::*;
+
 mod operation;
 pub use operation::*;
 
@@ -56,6 +61,23 @@ pub use serde_util::*;
 mod chrono_util;
 pub use chrono_util::*;
 
+#[cfg(feature = "internal-tokio-rt")]
+mod tokio_util;
+#[cfg(feature = "internal-tokio-rt")]
+pub use tokio_util::*;
+
+mod std_io_util;
+pub use std_io_util::*;
+
+mod futures_util;
+pub use futures_util::BoxedFuture;
+pub use futures_util::ConcurrentFutures;
+
+mod enum_utils;
+pub use enum_utils::*;
+
 // Expose as a pub mod to avoid confusing.
 pub mod adapters;
 pub mod oio;
+#[cfg(feature = "tests")]
+pub mod tests;

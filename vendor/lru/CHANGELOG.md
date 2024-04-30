@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.12.3](https://github.com/jeromefroe/lru-rs/tree/0.12.3) - 2024-02-24
+
+- Add `get_key_value_mut` method.
+
+## [v0.12.2](https://github.com/jeromefroe/lru-rs/tree/0.12.2) - 2024-01-28
+
+- Add `clone` method.
+
+## [v0.12.1](https://github.com/jeromefroe/lru-rs/tree/0.12.1) - 2023-11-21
+
+- Add `get_key_value` method.
+
 ## [v0.12.0](https://github.com/jeromefroe/lru-rs/tree/0.12.0) - 2023-10-03
 
 - Add lifetime specifier to `try_get_or_insert_mut`.

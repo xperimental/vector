@@ -26,20 +26,46 @@
 /// The macro invocations are emitted, each decorated with the following
 /// attribute: `#[allow(clippy::undocumented_unsafe_blocks)]`.
 macro_rules! safety_comment {
-    (#[doc = r" SAFETY:"] $($(#[doc = $_doc:literal])* $macro:ident!$args:tt;)*) => {
-        #[allow(clippy::undocumented_unsafe_blocks)]
-        const _: () = { $($macro!$args;)* };
+    (#[doc = r" SAFETY:"] $($(#[$attr:meta])* $macro:ident!$args:tt;)*) => {
+        #[allow(clippy::undocumented_unsafe_blocks, unused_attributes)]
+        const _: () = { $($(#[$attr])* $macro!$args;)* };
     }
 }
 
 /// Unsafely implements trait(s) for a type.
+///
+/// # Safety
+///
+/// The trait impl must be sound.
+///
+/// When implementing `TryFromBytes`:
+/// - If no `is_bit_valid` impl is provided, then it must be valid for
+///   `is_bit_valid` to unconditionally return `true`. In other words, it must
+///   be the case that any initialized sequence of bytes constitutes a valid
+///   instance of `$ty`.
+/// - If an `is_bit_valid` impl is provided, then:
+///   - Regardless of whether the provided closure takes a `Ptr<$repr>` or
+///     `&$repr` argument, it must be the case that, given `t: *mut $ty` and
+///     `let r = t as *mut $repr`, `r` refers to an object of equal or lesser
+///     size than the object referred to by `t`.
+///   - If the provided closure takes a `&$repr` argument, then given a `Ptr<'a,
+///     $ty>` which satisfies the preconditions of
+///     `TryFromBytes::<$ty>::is_bit_valid`, it must be guaranteed that the
+///     memory referenced by that `Ptr` always contains a valid `$repr`.
+///   - The alignment of `$repr` is less than or equal to the alignment of
+///     `$ty`.
+///   - The impl of `is_bit_valid` must only return `true` for its argument
+///     `Ptr<$repr>` if the original `Ptr<$ty>` refers to a valid `$ty`.
 macro_rules! unsafe_impl {
     // Implement `$trait` for `$ty` with no bounds.
-    ($ty:ty: $trait:ty) => {
-        unsafe impl $trait for $ty { #[allow(clippy::missing_inline_in_public_items)] fn only_derive_is_allowed_to_implement_this_trait() {} }
+    ($(#[$attr:meta])* $ty:ty: $trait:ident $(; |$candidate:ident: &$repr:ty| $is_bit_valid:expr)?) => {
+        $(#[$attr])*
+        unsafe impl $trait for $ty {
+            unsafe_impl!(@method $trait $(; |$candidate: &$repr| $is_bit_valid)?);
+        }
     };
     // Implement all `$traits` for `$ty` with no bounds.
-    ($ty:ty: $($traits:ty),*) => {
+    ($ty:ty: $($traits:ident),*) => {
         $( unsafe_impl!($ty: $traits); )*
     };
     // This arm is identical to the following one, except it contains a
@@ -68,38 +94,140 @@ macro_rules! unsafe_impl {
     // The following arm has the same behavior with the exception of the lack of
     // support for a leading `const` parameter.
     (
+        $(#[$attr:meta])*
         const $constname:ident : $constty:ident $(,)?
         $($tyvar:ident $(: $(? $optbound:ident $(+)?)* $($bound:ident $(+)?)* )?),*
-        => $trait:ident for $ty:ty
+        => $trait:ident for $ty:ty $(; |$candidate:ident $(: &$ref_repr:ty)? $(: Ptr<$ptr_repr:ty>)?| $is_bit_valid:expr)?
     ) => {
         unsafe_impl!(
             @inner
+            $(#[$attr])*
             @const $constname: $constty,
             $($tyvar $(: $(? $optbound +)* + $($bound +)*)?,)*
-            => $trait for $ty
+            => $trait for $ty $(; |$candidate $(: &$ref_repr)? $(: Ptr<$ptr_repr>)?| $is_bit_valid)?
         );
     };
     (
+        $(#[$attr:meta])*
         $($tyvar:ident $(: $(? $optbound:ident $(+)?)* $($bound:ident $(+)?)* )?),*
-        => $trait:ident for $ty:ty
+        => $trait:ident for $ty:ty $(; |$candidate:ident $(: &$ref_repr:ty)? $(: Ptr<$ptr_repr:ty>)?| $is_bit_valid:expr)?
     ) => {
         unsafe_impl!(
             @inner
+            $(#[$attr])*
             $($tyvar $(: $(? $optbound +)* + $($bound +)*)?,)*
-            => $trait for $ty
+            => $trait for $ty $(; |$candidate $(: &$ref_repr)? $(: Ptr<$ptr_repr>)?| $is_bit_valid)?
         );
     };
     (
         @inner
+        $(#[$attr:meta])*
         $(@const $constname:ident : $constty:ident,)*
         $($tyvar:ident $(: $(? $optbound:ident +)* + $($bound:ident +)* )?,)*
-        => $trait:ident for $ty:ty
+        => $trait:ident for $ty:ty $(; |$candidate:ident $(: &$ref_repr:ty)? $(: Ptr<$ptr_repr:ty>)?| $is_bit_valid:expr)?
     ) => {
+        $(#[$attr])*
         unsafe impl<$(const $constname: $constty,)* $($tyvar $(: $(? $optbound +)* $($bound +)*)?),*> $trait for $ty {
+            unsafe_impl!(@method $trait $(; |$candidate: $(&$ref_repr)? $(Ptr<$ptr_repr>)?| $is_bit_valid)?);
+        }
+    };
+
+    (@method TryFromBytes ; |$candidate:ident: &$repr:ty| $is_bit_valid:expr) => {
+        #[inline]
+        unsafe fn is_bit_valid(candidate: Ptr<'_, Self>) -> bool {
+            // SAFETY:
+            // - The argument to `cast_unsized` is `|p| p as *mut _` as required
+            //   by that method's safety precondition.
+            // - The caller has promised that the cast results in an object of
+            //   equal or lesser size.
+            // - The caller has promised that `$repr`'s alignment is less than
+            //   or equal to `Self`'s alignment.
+            #[allow(clippy::as_conversions)]
+            let candidate = unsafe { candidate.cast_unsized::<$repr, _>(|p| p as *mut _) };
+            // SAFETY:
+            // - The caller has promised that the referenced memory region will
+            //   contain a valid `$repr` for `'a`.
+            // - The memory may not be referenced by any mutable references.
+            //   This is a precondition of `is_bit_valid`.
+            // - The memory may not be mutated even via `UnsafeCell`s. This is a
+            //   precondition of `is_bit_valid`.
+            // - There must not exist any references to the same memory region
+            //   which contain `UnsafeCell`s at byte ranges which are not
+            //   identical to the byte ranges at which `T` contains
+            //   `UnsafeCell`s. This is a precondition of `is_bit_valid`.
+            let $candidate: &$repr = unsafe { candidate.as_ref() };
+            $is_bit_valid
+        }
+    };
+    (@method TryFromBytes ; |$candidate:ident: Ptr<$repr:ty>| $is_bit_valid:expr) => {
+        #[inline]
+        unsafe fn is_bit_valid(candidate: Ptr<'_, Self>) -> bool {
+            // SAFETY:
+            // - The argument to `cast_unsized` is `|p| p as *mut _` as required
+            //   by that method's safety precondition.
+            // - The caller has promised that the cast results in an object of
+            //   equal or lesser size.
+            // - The caller has promised that `$repr`'s alignment is less than
+            //   or equal to `Self`'s alignment.
+            #[allow(clippy::as_conversions)]
+            let $candidate = unsafe { candidate.cast_unsized::<$repr, _>(|p| p as *mut _) };
+            $is_bit_valid
+        }
+    };
+    (@method TryFromBytes) => { #[inline(always)] unsafe fn is_bit_valid(_: Ptr<'_, Self>) -> bool { true } };
+    (@method $trait:ident) => {
+        #[allow(clippy::missing_inline_in_public_items)]
+        fn only_derive_is_allowed_to_implement_this_trait() {}
+    };
+    (@method $trait:ident; |$_candidate:ident $(: &$_ref_repr:ty)? $(: NonNull<$_ptr_repr:ty>)?| $_is_bit_valid:expr) => {
+        compile_error!("Can't provide `is_bit_valid` impl for trait other than `TryFromBytes`");
+    };
+}
+
+/// Implements a trait for a type, bounding on each memeber of the power set of
+/// a set of type variables. This is useful for implementing traits for tuples
+/// or `fn` types.
+///
+/// The last argument is the name of a macro which will be called in every
+/// `impl` block, and is expected to expand to the name of the type for which to
+/// implement the trait.
+///
+/// For example, the invocation:
+/// ```ignore
+/// unsafe_impl_for_power_set!(A, B => Foo for type!(...))
+/// ```
+/// ...expands to:
+/// ```ignore
+/// unsafe impl       Foo for type!()     { ... }
+/// unsafe impl<B>    Foo for type!(B)    { ... }
+/// unsafe impl<A, B> Foo for type!(A, B) { ... }
+/// ```
+macro_rules! unsafe_impl_for_power_set {
+    ($first:ident $(, $rest:ident)* $(-> $ret:ident)? => $trait:ident for $macro:ident!(...)) => {
+        unsafe_impl_for_power_set!($($rest),* $(-> $ret)? => $trait for $macro!(...));
+        unsafe_impl_for_power_set!(@impl $first $(, $rest)* $(-> $ret)? => $trait for $macro!(...));
+    };
+    ($(-> $ret:ident)? => $trait:ident for $macro:ident!(...)) => {
+        unsafe_impl_for_power_set!(@impl $(-> $ret)? => $trait for $macro!(...));
+    };
+    (@impl $($vars:ident),* $(-> $ret:ident)? => $trait:ident for $macro:ident!(...)) => {
+        unsafe impl<$($vars,)* $($ret)?> $trait for $macro!($($vars),* $(-> $ret)?) {
             #[allow(clippy::missing_inline_in_public_items)]
             fn only_derive_is_allowed_to_implement_this_trait() {}
         }
     };
+}
+
+/// Expands to an `Option<extern "C" fn>` type with the given argument types and
+/// return type. Designed for use with `unsafe_impl_for_power_set`.
+macro_rules! opt_extern_c_fn {
+    ($($args:ident),* -> $ret:ident) => { Option<extern "C" fn($($args),*) -> $ret> };
+}
+
+/// Expands to a `Option<fn>` type with the given argument types and return
+/// type. Designed for use with `unsafe_impl_for_power_set`.
+macro_rules! opt_fn {
+    ($($args:ident),* -> $ret:ident) => { Option<fn($($args),*) -> $ret> };
 }
 
 /// Implements trait(s) for a type or verifies the given implementation by

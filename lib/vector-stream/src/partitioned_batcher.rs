@@ -11,7 +11,8 @@ use futures::stream::{Fuse, Stream, StreamExt};
 use pin_project::pin_project;
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use twox_hash::XxHash64;
-use vector_core::{partition::Partitioner, time::KeyedTimer, ByteSizeOf};
+use vector_common::byte_size_of::ByteSizeOf;
+use vector_core::{partition::Partitioner, time::KeyedTimer};
 
 use crate::batcher::{
     config::BatchConfigParts,
@@ -541,7 +542,7 @@ mod test {
             .fold(
                 HashMap::default(),
                 |mut acc: HashMap<u8, Vec<u64>>, (key, item)| {
-                    let arr: &mut Vec<u64> = acc.entry(key).or_insert_with(Vec::default);
+                    let arr: &mut Vec<u64> = acc.entry(key).or_default();
                     arr.push(item);
                     acc
                 },

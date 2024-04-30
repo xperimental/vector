@@ -5,6 +5,7 @@ use std::{
     convert::TryFrom,
     io::{self, Read},
 };
+use vector_lib::ipallowlist::IpAllowlistConfig;
 
 use bytes::{Buf, Bytes, BytesMut};
 use flate2::read::ZlibDecoder;
@@ -19,7 +20,7 @@ use vector_lib::{
     schema::Definition,
 };
 use vrl::value::kind::Collection;
-use vrl::value::Kind;
+use vrl::value::{KeyString, Kind};
 
 use super::util::net::{SocketListenAddr, TcpSource, TcpSourceAck, TcpSourceAcker};
 use crate::{
@@ -44,6 +45,9 @@ pub struct LogstashConfig {
     #[configurable(derived)]
     #[configurable(metadata(docs::advanced))]
     keepalive: Option<TcpKeepaliveConfig>,
+
+    #[configurable(derived)]
+    pub permit_origin: Option<IpAllowlistConfig>,
 
     #[configurable(derived)]
     tls: Option<TlsSourceConfig>,
@@ -117,6 +121,7 @@ impl Default for LogstashConfig {
         Self {
             address: SocketListenAddr::SocketAddr("0.0.0.0:5044".parse().unwrap()),
             keepalive: None,
+            permit_origin: None,
             tls: None,
             receive_buffer_bytes: None,
             acknowledgements: Default::default(),
@@ -162,6 +167,7 @@ impl SourceConfig for LogstashConfig {
             cx,
             self.acknowledgements,
             self.connection_limit,
+            self.permit_origin.clone().map(Into::into),
             LogstashConfig::NAME,
             log_namespace,
         )
@@ -434,7 +440,7 @@ impl TryFrom<u8> for LogstashFrameType {
 struct LogstashEventFrame {
     protocol: LogstashProtocolVersion,
     sequence_number: u32,
-    fields: BTreeMap<String, serde_json::Value>,
+    fields: BTreeMap<KeyString, serde_json::Value>,
 }
 
 // Based on spec at: https://github.com/logstash-plugins/logstash-input-beats/blob/master/PROTOCOL.md
@@ -522,7 +528,7 @@ impl Decoder for LogstashDecoder {
                     let sequence_number = rest.get_u32();
                     let pair_count = rest.get_u32();
 
-                    let mut fields: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+                    let mut fields = BTreeMap::<KeyString, serde_json::Value>::new();
                     for _ in 0..pair_count {
                         if src.remaining() < 4 {
                             return Ok(None);
@@ -546,7 +552,7 @@ impl Decoder for LogstashDecoder {
                         rest = right;
 
                         fields.insert(
-                            String::from_utf8_lossy(key).to_string(),
+                            String::from_utf8_lossy(key).into(),
                             String::from_utf8_lossy(value).into(),
                         );
                     }
@@ -585,7 +591,7 @@ impl Decoder for LogstashDecoder {
                     let (slice, right) = rest.split_at(payload_size);
                     rest = right;
 
-                    let fields_result: Result<BTreeMap<String, serde_json::Value>, _> =
+                    let fields_result: Result<BTreeMap<KeyString, serde_json::Value>, _> =
                         serde_json::from_slice(slice).context(JsonFrameFailedDecodeSnafu {});
 
                     let remaining = rest.remaining();
@@ -716,6 +722,7 @@ mod test {
             let source = LogstashConfig {
                 address: address.into(),
                 tls: None,
+                permit_origin: None,
                 keepalive: None,
                 receive_buffer_bytes: None,
                 acknowledgements: true.into(),
@@ -959,6 +966,7 @@ mod integration_tests {
                 address: address.into(),
                 tls: Some(tls_config),
                 keepalive: None,
+                permit_origin: None,
                 receive_buffer_bytes: None,
                 acknowledgements: false.into(),
                 connection_limit: None,

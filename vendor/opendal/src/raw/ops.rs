@@ -71,17 +71,34 @@ impl OpDelete {
 #[derive(Debug, Clone)]
 pub struct OpList {
     /// The limit passed to underlying service to specify the max results
-    /// that could return.
+    /// that could return per-request.
+    ///
+    /// Users could use this to control the memory usage of list operation.
     limit: Option<usize>,
-
     /// The start_after passes to underlying service to specify the specified key
     /// to start listing from.
     start_after: Option<String>,
-
-    /// The delimiter used to for the list operation. Default to be `/`
-    delimiter: String,
-
+    /// The recursive is used to control whether the list operation is recursive.
+    ///
+    /// - If `false`, list operation will only list the entries under the given path.
+    /// - If `true`, list operation will list all entries that starts with given path.
+    ///
+    /// Default to `false`.
+    recursive: bool,
+    /// Metakey is used to control which meta should be returned.
+    ///
+    /// Lister will make sure the result for specified meta is **known**:
+    ///
+    /// - `Some(v)` means exist.
+    /// - `None` means services doesn't have this meta.
     metakey: FlagSet<Metakey>,
+    /// The concurrent of stat operations inside list operation.
+    /// Users could use this to control the number of concurrent stat operation when metadata is unknown.
+    ///
+    /// - If this is set to <= 1, the list operation will be sequential.
+    /// - If this is set to > 1, the list operation will be concurrent,
+    ///   and the maximum number of concurrent operations will be determined by this value.
+    concurrent: usize,
 }
 
 impl Default for OpList {
@@ -89,9 +106,10 @@ impl Default for OpList {
         OpList {
             limit: None,
             start_after: None,
-            delimiter: "/".to_string(),
+            recursive: false,
             // By default, we want to know what's the mode of this entry.
             metakey: Metakey::Mode.into(),
+            concurrent: 1,
         }
     }
 }
@@ -124,15 +142,20 @@ impl OpList {
         self.start_after.as_deref()
     }
 
-    /// Change the delimiter. The default delimiter is "/"
-    pub fn with_delimiter(mut self, delimiter: &str) -> Self {
-        self.delimiter = delimiter.to_string();
+    /// The recursive is used to control whether the list operation is recursive.
+    ///
+    /// - If `false`, list operation will only list the entries under the given path.
+    /// - If `true`, list operation will list all entries that starts with given path.
+    ///
+    /// Default to `false`.
+    pub fn with_recursive(mut self, recursive: bool) -> Self {
+        self.recursive = recursive;
         self
     }
 
-    /// Get the current delimiter.
-    pub fn delimiter(&self) -> &str {
-        &self.delimiter
+    /// Get the current recursive.
+    pub fn recursive(&self) -> bool {
+        self.recursive
     }
 
     /// Change the metakey of this list operation.
@@ -146,6 +169,19 @@ impl OpList {
     /// Get the current metakey.
     pub fn metakey(&self) -> FlagSet<Metakey> {
         self.metakey
+    }
+
+    /// Change the concurrent of this list operation.
+    ///
+    /// The default concurrent is 1.
+    pub fn with_concurrent(mut self, concurrent: usize) -> Self {
+        self.concurrent = concurrent;
+        self
+    }
+
+    /// Get the concurrent of list operation.
+    pub fn concurrent(&self) -> usize {
+        self.concurrent
     }
 }
 
@@ -176,6 +212,11 @@ impl OpPresign {
     /// Get expire from op.
     pub fn expire(&self) -> Duration {
         self.expire
+    }
+
+    /// Consume OpPresign into (Duration, PresignOperation)
+    pub fn into_parts(self) -> (Duration, PresignOperation) {
+        (self.expire, self.op)
     }
 }
 
@@ -266,12 +307,32 @@ pub struct OpRead {
     override_cache_control: Option<String>,
     override_content_disposition: Option<String>,
     version: Option<String>,
+    /// The maximum buffer capability.
+    /// `None` stand for disable buffer.
+    buffer: Option<usize>,
 }
 
 impl OpRead {
     /// Create a default `OpRead` which will read whole content of path.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The into_deterministic function transforms the OpRead into a deterministic version.
+    ///
+    /// This API is utilized because it allows for internal optimizations such as dividing read
+    /// ranges or retrying the read request from where it failed. In these scenarios, the expected
+    /// `ETag` value differs from what users specify in `If-Match` or `If-None-Match`.Therefore,
+    /// we need to eliminate these conditional headers to ensure that the read operation is
+    /// deterministic.
+    ///
+    /// This API is not intended to be used by users and should never be exposed.
+    pub(crate) fn into_deterministic(self) -> Self {
+        Self {
+            if_match: None,
+            if_none_match: None,
+            ..self
+        }
     }
 
     /// Create a new OpRead with range.
@@ -351,6 +412,18 @@ impl OpRead {
     pub fn version(&self) -> Option<&str> {
         self.version.as_deref()
     }
+
+    /// Set the buffer capability.
+    pub fn with_buffer(mut self, buffer: usize) -> Self {
+        self.buffer = Some(buffer);
+
+        self
+    }
+
+    /// Get buffer from option.
+    pub fn buffer(&self) -> Option<usize> {
+        self.buffer
+    }
 }
 
 /// Args for `stat` operation.
@@ -358,6 +431,9 @@ impl OpRead {
 pub struct OpStat {
     if_match: Option<String>,
     if_none_match: Option<String>,
+    override_content_type: Option<String>,
+    override_cache_control: Option<String>,
+    override_content_disposition: Option<String>,
     version: Option<String>,
 }
 
@@ -389,6 +465,40 @@ impl OpStat {
         self.if_none_match.as_deref()
     }
 
+    /// Sets the content-disposition header that should be send back by the remote read operation.
+    pub fn with_override_content_disposition(mut self, content_disposition: &str) -> Self {
+        self.override_content_disposition = Some(content_disposition.into());
+        self
+    }
+
+    /// Returns the content-disposition header that should be send back by the remote read
+    /// operation.
+    pub fn override_content_disposition(&self) -> Option<&str> {
+        self.override_content_disposition.as_deref()
+    }
+
+    /// Sets the cache-control header that should be send back by the remote read operation.
+    pub fn with_override_cache_control(mut self, cache_control: &str) -> Self {
+        self.override_cache_control = Some(cache_control.into());
+        self
+    }
+
+    /// Returns the cache-control header that should be send back by the remote read operation.
+    pub fn override_cache_control(&self) -> Option<&str> {
+        self.override_cache_control.as_deref()
+    }
+
+    /// Sets the content-type header that should be send back by the remote read operation.
+    pub fn with_override_content_type(mut self, content_type: &str) -> Self {
+        self.override_content_type = Some(content_type.into());
+        self
+    }
+
+    /// Returns the content-type header that should be send back by the remote read operation.
+    pub fn override_content_type(&self) -> Option<&str> {
+        self.override_content_type.as_deref()
+    }
+
     /// Set the version of the option
     pub fn with_version(mut self, version: &str) -> Self {
         self.version = Some(version.to_string());
@@ -406,6 +516,7 @@ impl OpStat {
 pub struct OpWrite {
     append: bool,
     buffer: Option<usize>,
+    concurrent: usize,
 
     content_type: Option<String>,
     content_disposition: Option<String>,
@@ -489,6 +600,17 @@ impl OpWrite {
     /// Set the content type of option
     pub fn with_cache_control(mut self, cache_control: &str) -> Self {
         self.cache_control = Some(cache_control.to_string());
+        self
+    }
+
+    /// Get the concurrent.
+    pub fn concurrent(&self) -> usize {
+        self.concurrent
+    }
+
+    /// Set the maximum concurrent write task amount.
+    pub fn with_concurrent(mut self, concurrent: usize) -> Self {
+        self.concurrent = concurrent;
         self
     }
 }

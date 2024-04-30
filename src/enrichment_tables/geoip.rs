@@ -11,16 +11,14 @@ use maxminddb::{
     MaxMindDBError, Reader,
 };
 use ordered_float::NotNan;
-use vrl::value::Value;
-
 use vector_lib::configurable::configurable_component;
 use vector_lib::enrichment::{Case, Condition, IndexHandle, Table};
+use vrl::value::{ObjectMap, Value};
 
 use crate::config::{EnrichmentTableConfig, GenerateConfig};
 
 // MaxMind GeoIP database files have a type field we can use to recognize specific
-// products. If we encounter one of these two types, we look for ASN/ISP information;
-// otherwise we expect to be working with a City database.
+// products. If it is an unknown type, an error will be returned.
 #[derive(Copy, Clone, Debug)]
 #[allow(missing_docs)]
 pub enum DatabaseKind {
@@ -30,13 +28,16 @@ pub enum DatabaseKind {
     City,
 }
 
-impl From<&str> for DatabaseKind {
-    fn from(v: &str) -> Self {
-        match v {
-            "GeoLite2-ASN" => Self::Asn,
-            "GeoIP2-ISP" => Self::Isp,
-            "GeoIP2-Connection-Type" => Self::ConnectionType,
-            _ => Self::City,
+impl TryFrom<&str> for DatabaseKind {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "GeoLite2-ASN" => Ok(Self::Asn),
+            "GeoIP2-ISP" => Ok(Self::Isp),
+            "GeoIP2-Connection-Type" => Ok(Self::ConnectionType),
+            "GeoIP2-City" | "GeoLite2-City" => Ok(Self::City),
+            _ => Err(()),
         }
     }
 }
@@ -49,6 +50,7 @@ pub struct GeoipConfig {
     /// (**GeoLite2-City.mmdb**).
     ///
     /// Other databases, such as the country database, are not supported.
+    /// `mmdb` enrichment table can be used for other databases.
     ///
     /// [geoip2]: https://dev.maxmind.com/geoip/geoip2/downloadable
     /// [geolite2]: https://dev.maxmind.com/geoip/geoip2/geolite2/#Download_Access
@@ -113,7 +115,13 @@ impl Geoip {
     /// Creates a new GeoIP struct from the provided config.
     pub fn new(config: GeoipConfig) -> crate::Result<Self> {
         let dbreader = Arc::new(Reader::open_readfile(config.path.clone())?);
-        let dbkind = DatabaseKind::from(dbreader.metadata.database_type.as_str());
+        let dbkind =
+            DatabaseKind::try_from(dbreader.metadata.database_type.as_str()).map_err(|_| {
+                format!(
+                    "Unsupported MMDB database type ({}). Use `mmdb` enrichment table instead.",
+                    dbreader.metadata.database_type
+                )
+            })?;
 
         // Check if we can read database with dummy Ip.
         let ip = IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
@@ -134,14 +142,14 @@ impl Geoip {
         }
     }
 
-    fn lookup(&self, ip: IpAddr, select: Option<&[String]>) -> Option<BTreeMap<String, Value>> {
-        let mut map = BTreeMap::new();
+    fn lookup(&self, ip: IpAddr, select: Option<&[String]>) -> Option<ObjectMap> {
+        let mut map = ObjectMap::new();
         let mut add_field = |key: &str, value: Option<Value>| {
             if select
                 .map(|fields| fields.iter().any(|field| field == key))
                 .unwrap_or(true)
             {
-                map.insert(key.to_string(), value.unwrap_or(Value::Null));
+                map.insert(key.into(), value.unwrap_or(Value::Null));
             }
         };
 
@@ -245,7 +253,7 @@ impl Table for Geoip {
         condition: &'a [Condition<'a>],
         select: Option<&[String]>,
         index: Option<IndexHandle>,
-    ) -> Result<BTreeMap<String, Value>, String> {
+    ) -> Result<ObjectMap, String> {
         let mut rows = self.find_table_rows(case, condition, select, index)?;
 
         match rows.pop() {
@@ -264,8 +272,8 @@ impl Table for Geoip {
         condition: &'a [Condition<'a>],
         select: Option<&[String]>,
         _: Option<IndexHandle>,
-    ) -> Result<Vec<BTreeMap<String, Value>>, String> {
-        match condition.get(0) {
+    ) -> Result<Vec<ObjectMap>, String> {
+        match condition.first() {
             Some(_) if condition.len() > 1 => Err("Only one condition is allowed".to_string()),
             Some(Condition::Equals { value, .. }) => {
                 let ip = value
@@ -326,18 +334,18 @@ mod tests {
     fn city_lookup() {
         let values = find("2.125.160.216", "tests/data/GeoIP2-City-Test.mmdb").unwrap();
 
-        let mut expected = BTreeMap::<String, Value>::new();
-        expected.insert("city_name".to_string(), "Boxford".into());
-        expected.insert("country_code".to_string(), "GB".into());
-        expected.insert("continent_code".to_string(), "EU".into());
-        expected.insert("country_name".to_string(), "United Kingdom".into());
-        expected.insert("region_code".to_string(), "WBK".into());
-        expected.insert("region_name".to_string(), "West Berkshire".into());
-        expected.insert("timezone".to_string(), "Europe/London".into());
-        expected.insert("latitude".to_string(), Value::from(51.75));
-        expected.insert("longitude".to_string(), Value::from(-1.25));
-        expected.insert("postal_code".to_string(), "OX1".into());
-        expected.insert("metro_code".to_string(), Value::Null);
+        let mut expected = ObjectMap::new();
+        expected.insert("city_name".into(), "Boxford".into());
+        expected.insert("country_code".into(), "GB".into());
+        expected.insert("continent_code".into(), "EU".into());
+        expected.insert("country_name".into(), "United Kingdom".into());
+        expected.insert("region_code".into(), "WBK".into());
+        expected.insert("region_name".into(), "West Berkshire".into());
+        expected.insert("timezone".into(), "Europe/London".into());
+        expected.insert("latitude".into(), Value::from(51.75));
+        expected.insert("longitude".into(), Value::from(-1.25));
+        expected.insert("postal_code".into(), "OX1".into());
+        expected.insert("metro_code".into(), Value::Null);
 
         assert_eq!(values, expected);
     }
@@ -351,9 +359,9 @@ mod tests {
         )
         .unwrap();
 
-        let mut expected = BTreeMap::<String, Value>::new();
-        expected.insert("latitude".to_string(), Value::from(51.75));
-        expected.insert("longitude".to_string(), Value::from(-1.25));
+        let mut expected = ObjectMap::new();
+        expected.insert("latitude".into(), Value::from(51.75));
+        expected.insert("longitude".into(), Value::from(-1.25));
 
         assert_eq!(values, expected);
     }
@@ -362,18 +370,18 @@ mod tests {
     fn city_lookup_partial_results() {
         let values = find("67.43.156.9", "tests/data/GeoIP2-City-Test.mmdb").unwrap();
 
-        let mut expected = BTreeMap::<String, Value>::new();
-        expected.insert("city_name".to_string(), Value::Null);
-        expected.insert("country_code".to_string(), "BT".into());
-        expected.insert("country_name".to_string(), "Bhutan".into());
-        expected.insert("continent_code".to_string(), "AS".into());
-        expected.insert("region_code".to_string(), Value::Null);
-        expected.insert("region_name".to_string(), Value::Null);
-        expected.insert("timezone".to_string(), "Asia/Thimphu".into());
-        expected.insert("latitude".to_string(), Value::from(27.5));
-        expected.insert("longitude".to_string(), Value::from(90.5));
-        expected.insert("postal_code".to_string(), Value::Null);
-        expected.insert("metro_code".to_string(), Value::Null);
+        let mut expected = ObjectMap::new();
+        expected.insert("city_name".into(), Value::Null);
+        expected.insert("country_code".into(), "BT".into());
+        expected.insert("country_name".into(), "Bhutan".into());
+        expected.insert("continent_code".into(), "AS".into());
+        expected.insert("region_code".into(), Value::Null);
+        expected.insert("region_name".into(), Value::Null);
+        expected.insert("timezone".into(), "Asia/Thimphu".into());
+        expected.insert("latitude".into(), Value::from(27.5));
+        expected.insert("longitude".into(), Value::from(90.5));
+        expected.insert("postal_code".into(), Value::Null);
+        expected.insert("metro_code".into(), Value::Null);
 
         assert_eq!(values, expected);
     }
@@ -389,14 +397,14 @@ mod tests {
     fn isp_lookup() {
         let values = find("208.192.1.2", "tests/data/GeoIP2-ISP-Test.mmdb").unwrap();
 
-        let mut expected = BTreeMap::<String, Value>::new();
-        expected.insert("autonomous_system_number".to_string(), 701i64.into());
+        let mut expected = ObjectMap::new();
+        expected.insert("autonomous_system_number".into(), 701i64.into());
         expected.insert(
-            "autonomous_system_organization".to_string(),
+            "autonomous_system_organization".into(),
             "MCI Communications Services, Inc. d/b/a Verizon Business".into(),
         );
-        expected.insert("isp".to_string(), "Verizon Business".into());
-        expected.insert("organization".to_string(), "Verizon Business".into());
+        expected.insert("isp".into(), "Verizon Business".into());
+        expected.insert("organization".into(), "Verizon Business".into());
 
         assert_eq!(values, expected);
     }
@@ -405,14 +413,14 @@ mod tests {
     fn isp_lookup_partial_results() {
         let values = find("2600:7000::1", "tests/data/GeoLite2-ASN-Test.mmdb").unwrap();
 
-        let mut expected = BTreeMap::<String, Value>::new();
-        expected.insert("autonomous_system_number".to_string(), 6939i64.into());
+        let mut expected = ObjectMap::new();
+        expected.insert("autonomous_system_number".into(), 6939i64.into());
         expected.insert(
-            "autonomous_system_organization".to_string(),
+            "autonomous_system_organization".into(),
             "Hurricane Electric, Inc.".into(),
         );
-        expected.insert("isp".to_string(), Value::Null);
-        expected.insert("organization".to_string(), Value::Null);
+        expected.insert("isp".into(), Value::Null);
+        expected.insert("organization".into(), Value::Null);
 
         assert_eq!(values, expected);
     }
@@ -432,8 +440,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut expected = BTreeMap::<String, Value>::new();
-        expected.insert("connection_type".to_string(), "Corporate".into());
+        let mut expected = ObjectMap::new();
+        expected.insert("connection_type".into(), "Corporate".into());
 
         assert_eq!(values, expected);
     }
@@ -445,15 +453,21 @@ mod tests {
         assert!(values.is_none());
     }
 
-    fn find(ip: &str, database: &str) -> Option<BTreeMap<String, Value>> {
+    #[test]
+    fn custom_mmdb_type_error() {
+        let result = Geoip::new(GeoipConfig {
+            path: "tests/data/custom-type.mmdb".to_string(),
+            locale: default_locale(),
+        });
+
+        assert!(result.is_err());
+    }
+
+    fn find(ip: &str, database: &str) -> Option<ObjectMap> {
         find_select(ip, database, None)
     }
 
-    fn find_select(
-        ip: &str,
-        database: &str,
-        select: Option<&[String]>,
-    ) -> Option<BTreeMap<String, Value>> {
+    fn find_select(ip: &str, database: &str, select: Option<&[String]>) -> Option<ObjectMap> {
         Geoip::new(GeoipConfig {
             path: database.to_string(),
             locale: default_locale(),

@@ -17,7 +17,7 @@ This service can be used to:
 ## Configuration
 
 - `root`: Set the working directory of `OpenDAL`
-- `connection_string`: Set the connection string of postgres server
+- `connection_string`: Set the connection string of mysql server
 - `table`: Set the table of mysql
 - `key_field`: Set the key field of mysql
 - `value_field`: Set the value field of mysql
@@ -28,12 +28,12 @@ This service can be used to:
 
 ```rust
 use anyhow::Result;
-use opendal::services::MySql;
+use opendal::services::Mysql;
 use opendal::Operator;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut builder = MySql::default();
+    let mut builder = Mysql::default();
     builder.root("/");
     builder.connection_string("mysql://you_username:your_password@127.0.0.1:5432/your_database");
     builder.table("your_table");

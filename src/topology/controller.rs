@@ -12,9 +12,8 @@ use crate::api;
 use crate::config::enterprise::{
     report_on_reload, EnterpriseError, EnterpriseMetadata, EnterpriseReporter,
 };
-use crate::internal_events::{
-    VectorConfigLoadError, VectorRecoveryError, VectorReloadError, VectorReloaded,
-};
+use crate::extra_context::ExtraContext;
+use crate::internal_events::{VectorRecoveryError, VectorReloadError, VectorReloaded};
 
 use crate::{config, signal::ShutdownError, topology::RunningTopology};
 
@@ -43,6 +42,7 @@ pub struct TopologyController {
     pub enterprise_reporter: Option<EnterpriseReporter<BoxFuture<'static, ()>>>,
     #[cfg(feature = "api")]
     pub api_server: Option<api::Server>,
+    pub extra_context: ExtraContext,
 }
 
 impl std::fmt::Debug for TopologyController {
@@ -56,7 +56,6 @@ impl std::fmt::Debug for TopologyController {
 
 #[derive(Clone, Debug)]
 pub enum ReloadOutcome {
-    NoConfig,
     MissingApiKey,
     Success,
     RolledBack,
@@ -64,13 +63,7 @@ pub enum ReloadOutcome {
 }
 
 impl TopologyController {
-    pub async fn reload(&mut self, new_config: Option<config::Config>) -> ReloadOutcome {
-        if new_config.is_none() {
-            emit!(VectorConfigLoadError);
-            return ReloadOutcome::NoConfig;
-        }
-        let mut new_config = new_config.unwrap();
-
+    pub async fn reload(&mut self, mut new_config: config::Config) -> ReloadOutcome {
         new_config
             .healthchecks
             .set_require_healthy(self.require_healthy);
@@ -119,7 +112,8 @@ impl TopologyController {
                 Ok(api_server) => {
                     emit!(ApiStarted {
                         addr: new_config.api.address.unwrap(),
-                        playground: new_config.api.playground
+                        playground: new_config.api.playground,
+                        graphql: new_config.api.graphql,
                     });
 
                     Some(api_server)
@@ -132,7 +126,11 @@ impl TopologyController {
             }
         }
 
-        match self.topology.reload_config_and_respawn(new_config).await {
+        match self
+            .topology
+            .reload_config_and_respawn(new_config, self.extra_context.clone())
+            .await
+        {
             Ok(true) => {
                 #[cfg(feature = "api")]
                 // Pass the new config to the API server.

@@ -14,22 +14,22 @@ use vector_lib::schema::meaning;
 use vrl::path::OwnedValuePath;
 use vrl::value::Value;
 
-use crate::{event::Event, serde::skip_serializing_if_default};
+use crate::{event::Event, serde::is_default};
 
 /// Transformations to prepare an event for serialization.
 #[configurable_component(no_deser)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Transformer {
     /// List of fields that are included in the encoded event.
-    #[serde(default, skip_serializing_if = "skip_serializing_if_default")]
+    #[serde(default, skip_serializing_if = "is_default")]
     only_fields: Option<Vec<ConfigValuePath>>,
 
     /// List of fields that are excluded from the encoded event.
-    #[serde(default, skip_serializing_if = "skip_serializing_if_default")]
+    #[serde(default, skip_serializing_if = "is_default")]
     except_fields: Option<Vec<ConfigValuePath>>,
 
     /// Format used for timestamp fields.
-    #[serde(default, skip_serializing_if = "skip_serializing_if_default")]
+    #[serde(default, skip_serializing_if = "is_default")]
     timestamp_format: Option<TimestampFormat>,
 }
 
@@ -150,7 +150,7 @@ impl Transformer {
                 let mut new_log = LogEvent::from(old_value);
                 if let Some(service) = new_log.remove(service_path) {
                     log.metadata_mut()
-                        .add_dropped_field(meaning::SERVICE.to_string(), service);
+                        .add_dropped_field(meaning::SERVICE.into(), service);
                 }
             }
         }
@@ -171,7 +171,7 @@ impl Transformer {
                 if let (Some(v), Some(service_path)) = (value, service_path) {
                     if service_path.path == *value_path {
                         log.metadata_mut()
-                            .add_dropped_field(meaning::SERVICE.to_string(), v);
+                            .add_dropped_field(meaning::SERVICE.into(), v);
                     }
                 }
             }

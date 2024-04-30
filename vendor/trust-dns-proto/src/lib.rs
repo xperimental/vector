@@ -23,13 +23,10 @@
 #![allow(
     clippy::single_component_path_imports,
     clippy::upper_case_acronyms, // can be removed on a major release boundary
-    clippy::bool_to_int_with_if,
 )]
 #![recursion_limit = "2048"]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-//! **NOTICE** This project has been rebranded to Hickory DNS and has been moved to the https://github.com/hickory-dns/hickory-dns organization and repo, this crate/binary has been moved to [hickory-proto](https://docs.rs/hickory-proto/latest/hickory_proto/), from `0.24` and onward.
-//!
 //! Trust-DNS Protocol library
 
 use async_trait::async_trait;
@@ -77,12 +74,6 @@ pub mod op;
 #[cfg(feature = "dns-over-openssl")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dns-over-openssl")))]
 pub mod openssl;
-#[cfg(all(feature = "dns-over-quic", feature = "tokio-runtime"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "dns-over-quic", feature = "tokio-runtime")))
-)]
-pub mod quic;
 pub mod rr;
 #[cfg(feature = "dns-over-rustls")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dns-over-rustls")))]

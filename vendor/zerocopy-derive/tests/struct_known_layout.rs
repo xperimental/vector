@@ -9,7 +9,10 @@ mod util;
 
 use std::{marker::PhantomData, option::IntoIter};
 
-use {static_assertions::assert_impl_all, zerocopy::KnownLayout};
+use {
+    static_assertions::assert_impl_all,
+    zerocopy::{DstLayout, KnownLayout},
+};
 
 use crate::util::AU16;
 
@@ -45,3 +48,18 @@ struct TypeParams<'a, T, I: Iterator> {
 
 assert_impl_all!(TypeParams<'static, (), IntoIter<()>>: KnownLayout);
 assert_impl_all!(TypeParams<'static, AU16, IntoIter<()>>: KnownLayout);
+
+// Deriving `KnownLayout` should work if the struct has bounded parameters.
+
+#[derive(KnownLayout)]
+#[repr(C)]
+struct WithParams<'a: 'b, 'b: 'a, const N: usize, T: 'a + 'b + KnownLayout>(
+    [T; N],
+    PhantomData<&'a &'b ()>,
+)
+where
+    'a: 'b,
+    'b: 'a,
+    T: 'a + 'b + KnownLayout;
+
+assert_impl_all!(WithParams<'static, 'static, 42, u8>: KnownLayout);

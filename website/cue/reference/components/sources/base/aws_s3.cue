@@ -148,17 +148,63 @@ base: components: sources: aws_s3: configuration: {
 		description: "Configures how events are decoded from raw bytes."
 		required:    false
 		type: object: options: {
+			avro: {
+				description:   "Apache Avro-specific encoder options."
+				relevant_when: "codec = \"avro\""
+				required:      true
+				type: object: options: {
+					schema: {
+						description: """
+																The Avro schema definition.
+																Please note that the following [`apache_avro::types::Value`] variants are currently *not* supported:
+																* `Date`
+																* `Decimal`
+																* `Duration`
+																* `Fixed`
+																* `TimeMillis`
+																"""
+						required: true
+						type: string: examples: ["{ \"type\": \"record\", \"name\": \"log\", \"fields\": [{ \"name\": \"message\", \"type\": \"string\" }] }"]
+					}
+					strip_schema_id_prefix: {
+						description: """
+																For Avro datum encoded in Kafka messages, the bytes are prefixed with the schema ID.  Set this to true to strip the schema ID prefix.
+																According to [Confluent Kafka's document](https://docs.confluent.io/platform/current/schema-registry/fundamentals/serdes-develop/index.html#wire-format).
+																"""
+						required: true
+						type: bool: {}
+					}
+				}
+			}
 			codec: {
 				description: "The codec to use for decoding events."
 				required:    false
 				type: string: {
 					default: "bytes"
 					enum: {
+						avro: """
+															Decodes the raw bytes as as an [Apache Avro][apache_avro] message.
+
+															[apache_avro]: https://avro.apache.org/
+															"""
 						bytes: "Uses the raw bytes as-is."
 						gelf: """
 															Decodes the raw bytes as a [GELF][gelf] message.
 
+															This codec is experimental for the following reason:
+
+															The GELF specification is more strict than the actual Graylog receiver.
+															Vector's decoder currently adheres more strictly to the GELF spec, with
+															the exception that some characters such as `@`  are allowed in field names.
+
+															Other GELF codecs such as Loki's, use a [Go SDK][implementation] that is maintained
+															by Graylog, and is much more relaxed than the GELF spec.
+
+															Going forward, Vector will use that [Go SDK][implementation] as the reference implementation, which means
+															the codec may continue to relax the enforcement of specification.
+
 															[gelf]: https://docs.graylog.org/docs/gelf
+															[implementation]: https://github.com/Graylog2/go-gelf/blob/v2/gelf/reader.go
 															"""
 						json: """
 															Decodes the raw bytes as [JSON][json].
@@ -194,6 +240,11 @@ base: components: sources: aws_s3: configuration: {
 
 															[rfc3164]: https://www.ietf.org/rfc/rfc3164.txt
 															[rfc5424]: https://www.ietf.org/rfc/rfc5424.txt
+															"""
+						vrl: """
+															Decodes the raw bytes as a string and passes them as input to a [VRL][vrl] program.
+
+															[vrl]: https://vector.dev/docs/reference/vrl
 															"""
 					}
 				}
@@ -277,6 +328,37 @@ base: components: sources: aws_s3: configuration: {
 						"""
 					required: false
 					type: bool: default: true
+				}
+			}
+			vrl: {
+				description:   "VRL-specific decoding options."
+				relevant_when: "codec = \"vrl\""
+				required:      true
+				type: object: options: {
+					source: {
+						description: """
+																The [Vector Remap Language][vrl] (VRL) program to execute for each event.
+																Note that the final contents of the `.` target will be used as the decoding result.
+																Compilation error or use of 'abort' in a program will result in a decoding error.
+
+																[vrl]: https://vector.dev/docs/reference/vrl
+																"""
+						required: true
+						type: string: {}
+					}
+					timezone: {
+						description: """
+																The name of the timezone to apply to timestamp conversions that do not contain an explicit
+																time zone. The time zone name may be any name in the [TZ database][tz_database], or `local`
+																to indicate system local time.
+
+																If not set, `local` will be used.
+
+																[tz_database]: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+																"""
+						required: false
+						type: string: examples: ["local", "America/New_York", "EST5EDT"]
+					}
 				}
 			}
 		}
@@ -478,6 +560,15 @@ base: components: sources: aws_s3: configuration: {
 					unit: "tasks"
 				}
 			}
+			delete_failed_message: {
+				description: """
+					Whether to delete non-retryable messages.
+
+					If a message is rejected by the sink and not retryable, it is deleted from the queue.
+					"""
+				required: false
+				type: bool: default: true
+			}
 			delete_message: {
 				description: """
 					Whether to delete the message once it is processed.
@@ -560,14 +651,14 @@ base: components: sources: aws_s3: configuration: {
 					}
 					verify_certificate: {
 						description: """
-																Enables certificate verification.
+																Enables certificate verification. For components that create a server, this requires that the
+																client connections have a valid client certificate. For components that initiate requests,
+																this validates that the upstream has a valid certificate.
 
 																If enabled, certificates must not be expired and must be issued by a trusted
 																issuer. This verification operates in a hierarchical manner, checking that the leaf certificate (the
 																certificate presented by the client/server) is not only valid, but that the issuer of that certificate is also valid, and
 																so on until the verification process reaches a root certificate.
-
-																Relevant for both incoming and outgoing connections.
 
 																Do NOT set this to `false` unless you understand the risks of not verifying the validity of certificates.
 																"""
@@ -662,14 +753,14 @@ base: components: sources: aws_s3: configuration: {
 			}
 			verify_certificate: {
 				description: """
-					Enables certificate verification.
+					Enables certificate verification. For components that create a server, this requires that the
+					client connections have a valid client certificate. For components that initiate requests,
+					this validates that the upstream has a valid certificate.
 
 					If enabled, certificates must not be expired and must be issued by a trusted
 					issuer. This verification operates in a hierarchical manner, checking that the leaf certificate (the
 					certificate presented by the client/server) is not only valid, but that the issuer of that certificate is also valid, and
 					so on until the verification process reaches a root certificate.
-
-					Relevant for both incoming and outgoing connections.
 
 					Do NOT set this to `false` unless you understand the risks of not verifying the validity of certificates.
 					"""

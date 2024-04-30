@@ -80,10 +80,7 @@ pub struct AzureMonitorLogsConfig {
     pub(super) host: String,
 
     #[configurable(derived)]
-    #[serde(
-        default,
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
-    )]
+    #[serde(default, skip_serializing_if = "crate::serde::is_default")]
     pub encoding: Transformer,
 
     #[configurable(derived)]
@@ -112,7 +109,7 @@ pub struct AzureMonitorLogsConfig {
     #[serde(
         default,
         deserialize_with = "crate::serde::bool_or_struct",
-        skip_serializing_if = "crate::serde::skip_serializing_if_default"
+        skip_serializing_if = "crate::serde::is_default"
     )]
     pub acknowledgements: AcknowledgementsConfig,
 }
@@ -185,7 +182,7 @@ impl AzureMonitorLogsConfig {
 
         let retry_logic =
             HttpStatusRetryLogic::new(|res: &AzureMonitorLogsResponse| res.http_status);
-        let request_settings = self.request.unwrap_with(&Default::default());
+        let request_settings = self.request.into_settings();
         let service = ServiceBuilder::new()
             .settings(request_settings, retry_logic)
             .service(service);
