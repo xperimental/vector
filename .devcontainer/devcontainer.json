@@ -1,0 +1,4 @@
+{
+	"image": "mcr.microsoft.com/devcontainers/rust:dev-bookworm",
+	"postCreateCommand": "sudo apt update && sudo apt install -y protobuf-compiler"
+}
