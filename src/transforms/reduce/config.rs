@@ -53,6 +53,9 @@ pub struct ReduceConfig {
     /// The maximum number of events to group together.
     pub max_events: Option<NonZeroUsize>,
 
+    /// The maximum size (in bytes) to group together.
+    pub max_bytes: Option<NonZeroUsize>,
+
     /// An ordered list of fields by which to group events.
     ///
     /// Each group with matching values for the specified keys is reduced independently, allowing

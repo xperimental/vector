@@ -18,10 +18,12 @@ use indexmap::IndexMap;
 use vector_lib::stream::expiration_map::{map_with_expiration, Emitter};
 use vrl::path::{parse_target_path, OwnedTargetPath};
 use vrl::prelude::KeyString;
+use vector_common::byte_size_of::ByteSizeOf;
 
 #[derive(Clone, Debug)]
 struct ReduceState {
     events: usize,
+    bytes: usize,
     fields: HashMap<OwnedTargetPath, Box<dyn ReduceValueMerger>>,
     stale_since: Instant,
     creation: Instant,
@@ -46,6 +48,7 @@ impl ReduceState {
     fn new() -> Self {
         Self {
             events: 0,
+            bytes: 0,
             stale_since: Instant::now(),
             creation: Instant::now(),
             fields: HashMap::new(),
@@ -117,6 +120,7 @@ impl ReduceState {
         // else the event root is not an object (see https://github.com/vectordotdev/vector/issues/18219)
 
         self.events += 1;
+        self.bytes += e.size_of();
         self.stale_since = Instant::now();
     }
 
@@ -128,6 +132,7 @@ impl ReduceState {
             }
         }
         self.events = 0;
+        self.bytes = 0;
         event
     }
 }
@@ -143,6 +148,7 @@ pub struct Reduce {
     ends_when: Option<Condition>,
     starts_when: Option<Condition>,
     max_events: Option<usize>,
+    max_bytes: Option<usize>,
 }
 
 fn validate_merge_strategies(strategies: IndexMap<KeyString, MergeStrategy>) -> crate::Result<()> {
@@ -185,6 +191,7 @@ impl Reduce {
             .transpose()?;
         let group_by = config.group_by.clone().into_iter().collect();
         let max_events = config.max_events.map(|max| max.into());
+        let max_bytes = config.max_bytes.map(|max| max.into());
 
         validate_merge_strategies(config.merge_strategies.clone())?;
 
@@ -211,6 +218,7 @@ impl Reduce {
             ends_when,
             starts_when,
             max_events,
+            max_bytes,
         })
     }
 
@@ -275,6 +283,15 @@ impl Reduce {
             } else if let Some(entry) = self.reduce_merge_states.get(&discriminant) {
                 // The current event will finish this set
                 if entry.events + 1 == max_events {
+                    ends_here = true;
+                }
+            }
+        }
+
+        if let Some(max_bytes) = self.max_bytes {
+            if let Some(entry) = self.reduce_merge_states.get(&discriminant) {
+                let event_size = &event.size_of();
+                if entry.bytes + event_size >= max_bytes {
                     ends_here = true;
                 }
             }
