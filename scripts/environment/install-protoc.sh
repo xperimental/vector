@@ -42,6 +42,10 @@ get_arch() {
     echo "aarch_64"
   elif [[ "${os}" == "Linux" && "${arch}" == "aarch64" ]]; then
     echo "aarch_64"
+  elif [[ "${arch}" == "s390x" ]]; then
+    echo "s390_64"
+  elif [[ "${arch}" == "ppc64le" ]]; then
+    echo "ppcle_64"
   else
     echo "${arch}"
   fi
